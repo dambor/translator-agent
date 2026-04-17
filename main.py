@@ -38,6 +38,7 @@ import requests
 # Load .env file
 load_dotenv()
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
@@ -622,6 +623,50 @@ app = FastAPI(
     contact={"name": "watsonx Translator Agent"},
     license_info={"name": "Apache 2.0"},
 )
+
+
+def _patch_schema(obj):
+    if isinstance(obj, dict):
+        # anyOf [{type: X}, {type: null}] → type: X + nullable: true
+        if "anyOf" in obj:
+            non_null = [s for s in obj["anyOf"] if s != {"type": "null"}]
+            if len(non_null) < len(obj["anyOf"]):
+                obj.pop("anyOf")
+                obj.update(non_null[0] if len(non_null) == 1 else {"anyOf": non_null})
+                obj["nullable"] = True
+        # const → enum (3.0.3 doesn't support const)
+        if "const" in obj:
+            obj["enum"] = [obj.pop("const")]
+        # contentMediaType → format: binary (file uploads)
+        if "contentMediaType" in obj:
+            obj.pop("contentMediaType")
+            obj["format"] = "binary"
+        for v in list(obj.values()):
+            _patch_schema(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _patch_schema(item)
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        contact=app.contact,
+        license_info=app.license_info,
+        routes=app.routes,
+    )
+    schema["openapi"] = "3.0.3"
+    _patch_schema(schema)
+    schema["servers"] = [{"url": os.getenv("APP_URL", "http://localhost:8000")}]
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
 
 
 # ── Endpoints ───────────────────────────────────────────────────────

@@ -8,7 +8,9 @@ Japanese PDF → English PDF translation using IBM watsonx.ai foundation models.
 # 1. Install dependencies  (Python 3.13 recommended; 3.14 also works)
 pip install -r requirements.txt
 
-# 2. Configure credentials
+# 2. Configure credentials (automated)
+./setup-env.sh
+# — or manually —
 cp .env.example .env
 # Edit .env with your IBM Cloud API key and watsonx project ID
 
@@ -151,6 +153,25 @@ docker run -p 8000:8000 \
   watsonx-translator
 ```
 
+## Credential Setup Script
+
+`setup-env.sh` automates fetching all required credentials from IBM Cloud and writes them to `.env`.
+
+```bash
+chmod +x setup-env.sh
+./setup-env.sh
+```
+
+The script will:
+1. Log in to IBM Cloud (SSO)
+2. Create a new IBM Cloud API key
+3. Fetch your watsonx project ID (prompts to select if multiple exist)
+4. Fetch or create HMAC credentials for IBM COS
+5. Ask for your COS bucket name
+6. Write all values to `.env`
+
+> **Requires:** `ibmcloud` CLI with the Code Engine plugin, and `jq`.
+
 ## IBM Code Engine Deployment
 
 ```bash
@@ -247,10 +268,45 @@ https://s3.us-south.cloud-object-storage.appdomain.cloud/your-bucket/translated/
 
 ## OpenAPI Integration
 
-The full OpenAPI 3.0 spec is auto-generated at `/openapi.json`. You can import this
-directly into watsonx Assistant, Langflow, or any API gateway for agent orchestration.
+Use `openapi-spec.json` (OpenAPI 3.0.3, included in the repo) to import into watsonx Assistant
+or any API gateway. The live `/openapi.json` endpoint returns OpenAPI 3.1.0 (FastAPI default)
+which some tools do not support.
+
+To regenerate `openapi-spec.json` from a running server and keep it up to date:
 
 ```bash
-# Download the spec
-curl http://localhost:8000/openapi.json -o openapi.json
+curl -s http://localhost:8000/openapi.json | jq '.' > openapi-spec.json
 ```
+
+> **Note:** After regenerating, manually update the `"openapi"` version field from `3.1.0`
+> to `3.0.3` and add the `servers` block (see section below) before importing.
+
+## Configuring the OpenAPI Spec (`openapi-spec.json`)
+
+The repository includes a pre-built spec file at `openapi-spec.json` ready to import into
+watsonx Assistant or any OpenAPI-compatible tool. Before importing, update the `servers`
+field with your deployed app URL.
+
+### 1. Get your Code Engine app URL
+
+```bash
+ibmcloud ce app get --name watsonx-translator --output json | jq -r '.status.url'
+```
+
+### 2. Update the server URL in `openapi-spec.json`
+
+Open `openapi-spec.json` and replace the `servers` block near the bottom of the file:
+
+```json
+"servers": [
+  {
+    "url": "https://<your-app>.<region>.codeengine.appdomain.cloud"
+  }
+]
+```
+
+### 3. Import into watsonx Assistant
+
+1. In watsonx Assistant, go to **Integrations → Extensions → Build custom extension**
+2. Upload `openapi-spec.json`
+3. Follow the prompts to authenticate with your API key and enable the extension
