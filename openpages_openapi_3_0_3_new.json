@@ -1,0 +1,425 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "watsonx AI Translator Agent",
+    "description": "Translate Japanese PDFs to English using IBM watsonx.ai foundation models. Supports model selection at request time (Granite, Llama, Mistral, etc.). Upload a Japanese PDF and receive a translated English PDF.",
+    "contact": {
+      "name": "watsonx Translator Agent"
+    },
+    "license": {
+      "name": "Apache 2.0"
+    },
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Health Check",
+        "description": "Check API health and configuration status.",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/models": {
+      "get": {
+        "tags": ["Models"],
+        "summary": "List Models",
+        "description": "List all supported watsonx.ai models for translation.",
+        "operationId": "list_models_api_v1_models_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ModelsResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/regions": {
+      "get": {
+        "tags": ["Configuration"],
+        "summary": "List Regions",
+        "description": "List available IBM Cloud regions for watsonx.ai.",
+        "operationId": "list_regions_api_v1_regions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": { "schema": {} }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/translate/from-source": {
+      "post": {
+        "tags": ["Translation"],
+        "summary": "Translate a Japanese PDF from a URL, file path, or bucket",
+        "description": "Provide a PDF source — an HTTP/HTTPS URL (type=url, e.g. a file uploaded by the user in Orchestrate or a direct download link), a server-side file path (type=file_path), or an S3-compatible bucket object (type=bucket). The agent fetches the PDF, translates it from Japanese to English, and returns a downloadable English PDF.",
+        "operationId": "translate_from_source_api_v1_translate_from_source_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TranslateFromSourceRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TranslateResponse" }
+              }
+            }
+          },
+          "400": { "description": "Bad request (invalid file type or missing project ID)" },
+          "404": { "description": "Source file or bucket object not found" },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HTTPValidationError" }
+              }
+            }
+          },
+          "502": { "description": "Bucket access error or upstream API failure" }
+        }
+      }
+    },
+    "/api/v1/translate/text": {
+      "post": {
+        "tags": ["Translation"],
+        "summary": "Translate Japanese text to English",
+        "description": "Send raw Japanese text and receive the English translation plus a downloadable PDF. Use this operation when the user uploads a Japanese document directly in the Orchestrate chat — Orchestrate extracts the text and the agent passes it here. Returns both the translated text and a download_url for the PDF.",
+        "operationId": "translate_text_endpoint_api_v1_translate_text_post",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TranslateTextRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TranslateTextResponse" }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HTTPValidationError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/download/{filename}": {
+      "get": {
+        "tags": ["Download"],
+        "summary": "Download a translated PDF",
+        "description": "Download a previously translated PDF by filename.",
+        "operationId": "download_translated_pdf_api_v1_download__filename__get",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Filename"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Translated English PDF",
+            "content": {
+              "application/pdf": {}
+            }
+          },
+          "404": { "description": "File not found" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PdfSource": {
+        "type": "object",
+        "required": ["type"],
+        "title": "PdfSource",
+        "description": "PDF source descriptor. Use type='url' with a 'url' field to supply a download link (e.g. a watsonx Assistant file attachment URL). Use type='file_path' with 'path' for a server-side file. Use type='bucket' with 'bucket'+'key' (and 'endpoint_url' for IBM COS) for cloud object storage.",
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "Source type: 'url' for an HTTP/HTTPS download link, 'file_path' for a server-side file, 'bucket' for S3-compatible object storage",
+            "enum": ["url", "file_path", "bucket"]
+          },
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "HTTP or HTTPS URL pointing to the PDF. Used when type=url (e.g. a pre-signed URL or watsonx Assistant file attachment link)."
+          },
+          "headers": {
+            "type": "object",
+            "title": "Headers",
+            "description": "Optional HTTP headers (e.g. Authorization: Bearer ...) needed to download from the URL. Used when type=url.",
+            "additionalProperties": { "type": "string" }
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Absolute path to the PDF on the server filesystem. Required when type=file_path."
+          },
+          "endpoint_url": {
+            "type": "string",
+            "title": "Endpoint Url",
+            "description": "S3-compatible endpoint URL. Required for IBM COS (e.g. https://s3.us-south.cloud-object-storage.appdomain.cloud). Omit for AWS S3."
+          },
+          "bucket": {
+            "type": "string",
+            "title": "Bucket",
+            "description": "Bucket name. Required when type=bucket."
+          },
+          "key": {
+            "type": "string",
+            "title": "Key",
+            "description": "Object key / path inside the bucket (must end in .pdf). Required when type=bucket."
+          },
+          "access_key_id": {
+            "type": "string",
+            "title": "Access Key Id",
+            "description": "IBM HMAC / AWS access key ID. Falls back to AWS_ACCESS_KEY_ID env var."
+          },
+          "secret_access_key": {
+            "type": "string",
+            "title": "Secret Access Key",
+            "description": "IBM HMAC / AWS secret access key. Falls back to AWS_SECRET_ACCESS_KEY env var."
+          },
+          "region_name": {
+            "type": "string",
+            "title": "Region Name",
+            "description": "Bucket region (e.g. 'us-south'). Optional for IBM COS."
+          }
+        }
+      },
+      "TranslateFromSourceRequest": {
+        "type": "object",
+        "required": ["source"],
+        "title": "TranslateFromSourceRequest",
+        "description": "Translate a PDF referenced by a local path or a cloud bucket object.",
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/PdfSource"
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id",
+            "description": "watsonx.ai model ID. Defaults to granite-3-8b-instruct.",
+            "default": "ibm/granite-3-8b-instruct",
+            "enum": [
+              "ibm/granite-3-8b-instruct",
+              "ibm/granite-3-2b-instruct",
+              "ibm/granite-20b-multilingual",
+              "ibm/granite-13b-instruct-v2",
+              "meta-llama/llama-3-1-70b-instruct",
+              "meta-llama/llama-3-1-8b-instruct",
+              "meta-llama/llama-3-70b-instruct",
+              "mistralai/mistral-large",
+              "mistralai/mixtral-8x7b-instruct-v01",
+              "google/flan-ul2",
+              "elyza/elyza-japanese-llama-2-7b-instruct"
+            ]
+          },
+          "region": {
+            "type": "string",
+            "title": "Region",
+            "description": "watsonx.ai region URL. Defaults to WATSONX_URL env var.",
+            "enum": [
+              "https://us-south.ml.cloud.ibm.com",
+              "https://eu-de.ml.cloud.ibm.com",
+              "https://eu-gb.ml.cloud.ibm.com",
+              "https://jp-tok.ml.cloud.ibm.com"
+            ]
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "watsonx project ID. Defaults to WATSONX_PROJECT_ID env var."
+          }
+        }
+      },
+      "HTTPValidationError": {
+        "type": "object",
+        "title": "HTTPValidationError",
+        "properties": {
+          "detail": {
+            "type": "array",
+            "title": "Detail",
+            "items": { "$ref": "#/components/schemas/ValidationError" }
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["status", "watsonx_url", "project_configured"],
+        "title": "HealthResponse",
+        "properties": {
+          "status": { "type": "string", "title": "Status" },
+          "watsonx_url": { "type": "string", "title": "Watsonx Url" },
+          "project_configured": { "type": "boolean", "title": "Project Configured" }
+        }
+      },
+      "ModelInfo": {
+        "type": "object",
+        "required": ["id", "name", "family"],
+        "title": "ModelInfo",
+        "properties": {
+          "id": { "type": "string", "title": "Id" },
+          "name": { "type": "string", "title": "Name" },
+          "family": { "type": "string", "title": "Family" }
+        }
+      },
+      "ModelsResponse": {
+        "type": "object",
+        "required": ["models"],
+        "title": "ModelsResponse",
+        "properties": {
+          "models": {
+            "type": "array",
+            "title": "Models",
+            "items": { "$ref": "#/components/schemas/ModelInfo" }
+          }
+        }
+      },
+      "TranslateResponse": {
+        "type": "object",
+        "required": ["message", "pages_translated", "model_used", "region", "download_url", "pages"],
+        "title": "TranslateResponse",
+        "properties": {
+          "message": { "type": "string", "title": "Message" },
+          "pages_translated": { "type": "integer", "title": "Pages Translated" },
+          "model_used": { "type": "string", "title": "Model Used" },
+          "region": { "type": "string", "title": "Region" },
+          "download_url": { "type": "string", "title": "Download Url" },
+          "pages": {
+            "type": "array",
+            "title": "Pages",
+            "items": { "$ref": "#/components/schemas/TranslationPageDetail" }
+          }
+        }
+      },
+      "TranslateTextRequest": {
+        "type": "object",
+        "required": ["text"],
+        "title": "TranslateTextRequest",
+        "description": "Request body for direct text translation (non-PDF).",
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Japanese text to translate"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "description": "Original filename without extension (e.g. 'japanese-doc'). Used to name the output PDF as '{filename}_translated_YYYYMMDD.pdf'."
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id",
+            "description": "watsonx model ID",
+            "enum": [
+              "ibm/granite-3-8b-instruct",
+              "ibm/granite-3-2b-instruct",
+              "ibm/granite-20b-multilingual",
+              "ibm/granite-13b-instruct-v2",
+              "meta-llama/llama-3-1-70b-instruct",
+              "meta-llama/llama-3-1-8b-instruct",
+              "meta-llama/llama-3-70b-instruct",
+              "mistralai/mistral-large",
+              "mistralai/mixtral-8x7b-instruct-v01",
+              "google/flan-ul2",
+              "elyza/elyza-japanese-llama-2-7b-instruct"
+            ]
+          },
+          "region": {
+            "type": "string",
+            "title": "Region",
+            "description": "watsonx region URL",
+            "enum": [
+              "https://us-south.ml.cloud.ibm.com",
+              "https://eu-de.ml.cloud.ibm.com",
+              "https://eu-gb.ml.cloud.ibm.com",
+              "https://jp-tok.ml.cloud.ibm.com"
+            ]
+          }
+        }
+      },
+      "TranslateTextResponse": {
+        "type": "object",
+        "required": ["translated_text", "model_used", "source_chars", "translated_chars"],
+        "title": "TranslateTextResponse",
+        "properties": {
+          "translated_text": { "type": "string", "title": "Translated Text" },
+          "model_used": { "type": "string", "title": "Model Used" },
+          "source_chars": { "type": "integer", "title": "Source Chars" },
+          "translated_chars": { "type": "integer", "title": "Translated Chars" },
+          "download_url": { "type": "string", "title": "Download Url", "description": "URL to download the translated content as a PDF" }
+        }
+      },
+      "TranslationPageDetail": {
+        "type": "object",
+        "required": ["page", "source_chars", "translated_chars"],
+        "title": "TranslationPageDetail",
+        "properties": {
+          "page": { "type": "integer", "title": "Page" },
+          "source_chars": { "type": "integer", "title": "Source Chars" },
+          "translated_chars": { "type": "integer", "title": "Translated Chars" }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "required": ["loc", "msg", "type"],
+        "title": "ValidationError",
+        "properties": {
+          "loc": {
+            "type": "array",
+            "title": "Location",
+            "items": { "type": "string" }
+          },
+          "msg": { "type": "string", "title": "Message" },
+          "type": { "type": "string", "title": "Error Type" }
+        }
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://agent-translator-app.2841tgdm3yaw.us-south.codeengine.appdomain.cloud"
+    }
+  ]
+}
