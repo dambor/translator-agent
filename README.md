@@ -7,16 +7,13 @@ Japanese PDF → English PDF translation using IBM watsonx.ai foundation models.
 **Prerequisites:** `ibmcloud` CLI, `jq`, Python 3.13+
 
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Fetch all credentials and write .env
+# 1. Install dependencies and fetch all credentials → writes .env
 ./setup-env.sh
 
-# 3. Run locally
+# 2. Run locally
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-# 4. Open Swagger docs
+# 3. Open Swagger docs
 open http://localhost:8000/docs
 ```
 
