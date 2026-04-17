@@ -159,6 +159,15 @@ ibmcloud login
 ibmcloud target -g Default
 ibmcloud ce project select --name my-project
 
+# Find your credentials
+ibmcloud iam api-keys                    # list existing API keys
+ibmcloud iam api-key-create my-api-key -d "My API key" --output json   # or create one
+
+# Get your watsonx Project ID
+curl -X GET "https://api.dataplatform.cloud.ibm.com/v2/projects" \
+  -H "Authorization: Bearer $(ibmcloud iam oauth-tokens --output json | jq -r '.iam_token' | cut -d' ' -f2)"
+# Look for "guid" or "id" in the response — that's your watsonx_project_id
+
 # Deploy from local source (no Docker build required)
 ibmcloud ce app create \
   --name watsonx-translator \
