@@ -4,38 +4,64 @@ Japanese PDF → English PDF translation using IBM watsonx.ai foundation models.
 
 ## Quick Start
 
+**Prerequisites:** `ibmcloud` CLI, `jq`, Python 3.13+
+
 ```bash
-# 1. Install dependencies  (Python 3.13 recommended; 3.14 also works)
+# 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Configure credentials (automated)
+# 2. Fetch all credentials and write .env
 ./setup-env.sh
-# — or manually —
-cp .env.example .env
-# Edit .env with your IBM Cloud API key and watsonx project ID
 
-# 3. Run the server
+# 3. Run locally
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 # 4. Open Swagger docs
 open http://localhost:8000/docs
 ```
 
-### Environment variables
+## Deploy to IBM Code Engine
+
+```bash
+# Deploys (or updates) the app and automatically sets APP_URL
+./deploy.sh
+```
+
+`deploy.sh` reads credentials from `.env` (written by `setup-env.sh`), creates or updates
+the Code Engine app, and sets `APP_URL` so the OpenAPI spec reflects the real server URL.
+
+After deploy, the OpenAPI spec is ready to import:
+
+```bash
+# Download the spec (OpenAPI 3.0.3)
+curl -s https://<your-app-url>/openapi.json | jq '.' > openapi-spec.json
+```
+
+> Override the app name or project without editing the script:
+> ```bash
+> APP_NAME=my-app CE_PROJECT=my-project ./deploy.sh
+> ```
+
+## Import into watsonx Assistant
+
+1. Go to **Integrations → Extensions → Build custom extension**
+2. Upload `openapi-spec.json`
+3. Follow the prompts to authenticate and enable the extension
+
+## Environment Variables
 
 | Variable                | Required | Description                                        |
 |-------------------------|----------|----------------------------------------------------|
 | `IBM_CLOUD_API_KEY`     | Yes      | IBM Cloud API key used to obtain an IAM token      |
 | `WATSONX_PROJECT_ID`    | Yes      | watsonx.ai project ID                              |
+| `APP_URL`               | Yes      | Deployed app URL — set automatically by `deploy.sh` |
 | `WATSONX_URL`           | No       | Region endpoint (default: `https://us-south.ml.cloud.ibm.com`) |
 | `WATSONX_API_VERSION`   | No       | API version string (default: `2024-05-01`)         |
 | `CHUNK_SIZE`            | No       | Max chars per translation chunk (default: `3000`)  |
-| `AWS_ACCESS_KEY_ID`     | No       | IBM COS / S3 HMAC access key (used by `/from-source` bucket source) |
-| `AWS_SECRET_ACCESS_KEY` | No       | IBM COS / S3 HMAC secret key (used by `/from-source` bucket source) |
-| `OUTPUT_COS_ENDPOINT`   | No       | COS endpoint where translated PDFs are uploaded (recommended for Code Engine) |
+| `OUTPUT_COS_ENDPOINT`   | No       | COS endpoint for translated PDF output             |
 | `OUTPUT_COS_BUCKET`     | No       | Bucket name for translated PDF output              |
-| `OUTPUT_COS_ACCESS_KEY` | No       | HMAC access key for the output bucket (falls back to `AWS_ACCESS_KEY_ID`) |
-| `OUTPUT_COS_SECRET_KEY` | No       | HMAC secret key for the output bucket (falls back to `AWS_SECRET_ACCESS_KEY`) |
+| `OUTPUT_COS_ACCESS_KEY` | No       | HMAC access key for the output bucket              |
+| `OUTPUT_COS_SECRET_KEY` | No       | HMAC secret key for the output bucket              |
 
 ## API Endpoints
 
@@ -116,9 +142,8 @@ curl -X POST "http://localhost:8000/api/v1/translate/from-source" \
   }' | jq .
 ```
 
-> **Tip:** `access_key_id` and `secret_access_key` are optional when `AWS_ACCESS_KEY_ID` /
-> `AWS_SECRET_ACCESS_KEY` env vars are set. The `endpoint_url` field is required for IBM COS
-> and any other non-AWS S3-compatible store; omit it for AWS S3.
+> **Tip:** `access_key_id` and `secret_access_key` are optional when `OUTPUT_COS_ACCESS_KEY` /
+> `OUTPUT_COS_SECRET_KEY` env vars are set.
 
 ### Download the translated PDF
 ```bash
@@ -140,120 +165,6 @@ curl -X POST "http://localhost:8000/api/v1/translate/text" \
 curl http://localhost:8000/api/v1/models | jq .
 ```
 
-## Docker Deployment
-
-```bash
-# Build
-docker build -t watsonx-translator .
-
-# Run
-docker run -p 8000:8000 \
-  -e IBM_CLOUD_API_KEY="your-key" \
-  -e WATSONX_PROJECT_ID="your-project-id" \
-  watsonx-translator
-```
-
-## Credential Setup Script
-
-`setup-env.sh` automates fetching all required credentials from IBM Cloud and writes them to `.env`.
-
-```bash
-chmod +x setup-env.sh
-./setup-env.sh
-```
-
-The script will:
-1. Log in to IBM Cloud (SSO)
-2. Create a new IBM Cloud API key
-3. Fetch your watsonx project ID (prompts to select if multiple exist)
-4. Fetch or create HMAC credentials for IBM COS
-5. Ask for your COS bucket name
-6. Write all values to `.env`
-
-> **Requires:** `ibmcloud` CLI with the Code Engine plugin, and `jq`.
-
-## IBM Code Engine Deployment
-
-```bash
-# Login and target
-ibmcloud login
-ibmcloud target -g Default
-ibmcloud ce project select --name my-project
-
-# Find your credentials
-ibmcloud iam api-keys                    # list existing API keys
-ibmcloud iam api-key-create my-api-key -d "My API key" --output json   # or create one
-
-# Get your watsonx Project ID
-curl -X GET "https://api.dataplatform.cloud.ibm.com/v2/projects" \
-  -H "Authorization: Bearer $(ibmcloud iam oauth-tokens --output json | jq -r '.iam_token' | cut -d' ' -f2)"
-# Look for "guid" or "id" in the response — that's your watsonx_project_id
-
-# Deploy from local source (no Docker build required)
-ibmcloud ce app create \
-  --name watsonx-translator \
-  --build-source . \
-  --port 8000 \
-  --min-scale 0 \
-  --max-scale 3 \
-  --env IBM_CLOUD_API_KEY="your-key" \
-  --env WATSONX_PROJECT_ID="your-project-id"
-
-# Redeploy after code changes
-ibmcloud ce app update --name watsonx-translator --build-source .
-```
-
-## Output Bucket Setup (IBM COS)
-
-When running on Code Engine, translated PDFs should be saved to IBM COS instead of the
-ephemeral local filesystem. This makes the `download_url` in the response a stable, persistent
-link accessible by watsonx Orchestrate or any other client.
-
-### 1. Create HMAC credentials for your COS instance
-
-```bash
-ibmcloud resource service-key-create translator-hmac Writer \
-  --instance-name CloudObjectStorage \
-  --parameters '{"HMAC": true}'
-```
-
-The output contains:
-```
-cos_hmac_keys:
-  access_key_id:     <your-access-key-id>
-  secret_access_key: <your-secret-access-key>
-```
-
-### 2. Configure the output bucket on Code Engine
-
-```bash
-ibmcloud ce app update --name watsonx-translator \
-  --env OUTPUT_COS_ENDPOINT=https://s3.us-south.cloud-object-storage.appdomain.cloud \
-  --env OUTPUT_COS_BUCKET=your-bucket-name \
-  --env OUTPUT_COS_ACCESS_KEY=your-access-key-id \
-  --env OUTPUT_COS_SECRET_KEY=your-secret-access-key
-```
-
-> **Tip:** Use the endpoint that matches your bucket's region. Find the correct endpoint at
-> IBM Cloud Console → Object Storage → your bucket → Configuration.
-
-### 3. Ensure the bucket has public read access
-
-Objects are uploaded without a public ACL. To make translated PDFs publicly accessible,
-set the bucket policy to **Public** in the IBM Cloud Console:
-IBM Cloud → Object Storage → your bucket → Access policies → Public access → Enable.
-
-### 4. Deploy the updated code
-
-```bash
-ibmcloud ce app update --name watsonx-translator --build-source .
-```
-
-When configured, the `download_url` field in the response will point directly to the COS object:
-```
-https://s3.us-south.cloud-object-storage.appdomain.cloud/your-bucket/translated/translated_XXXX.pdf
-```
-
 ## Supported Models
 
 | Provider | Model                              | Best For                        |
@@ -266,47 +177,26 @@ https://s3.us-south.cloud-object-storage.appdomain.cloud/your-bucket/translated/
 | Mistral  | mixtral-8x7b-instruct-v01          | MoE, good balance              |
 | ELYZA    | elyza-japanese-llama-2-7b-instruct | Japanese-specialized            |
 
-## OpenAPI Integration
-
-Use `openapi-spec.json` (OpenAPI 3.0.3, included in the repo) to import into watsonx Assistant
-or any API gateway. The live `/openapi.json` endpoint returns OpenAPI 3.1.0 (FastAPI default)
-which some tools do not support.
-
-To regenerate `openapi-spec.json` from a running server and keep it up to date:
+## Docker Deployment
 
 ```bash
-curl -s http://localhost:8000/openapi.json | jq '.' > openapi-spec.json
+docker build -t watsonx-translator .
+docker run -p 8000:8000 \
+  -e IBM_CLOUD_API_KEY="your-key" \
+  -e WATSONX_PROJECT_ID="your-project-id" \
+  watsonx-translator
 ```
 
-> **Note:** After regenerating, manually update the `"openapi"` version field from `3.1.0`
-> to `3.0.3` and add the `servers` block (see section below) before importing.
+## Output Bucket (IBM COS)
 
-## Configuring the OpenAPI Spec (`openapi-spec.json`)
+When running on Code Engine, translated PDFs are saved to IBM COS so `download_url` returns
+a stable, persistent link. `setup-env.sh` creates the HMAC credentials and `deploy.sh` sets
+all required env vars automatically.
 
-The repository includes a pre-built spec file at `openapi-spec.json` ready to import into
-watsonx Assistant or any OpenAPI-compatible tool. Before importing, update the `servers`
-field with your deployed app URL.
+To make translated PDFs publicly accessible, enable public access on the bucket:
+IBM Cloud → Object Storage → your bucket → Access policies → Public access → Enable.
 
-### 1. Get your Code Engine app URL
-
-```bash
-ibmcloud ce app get --name watsonx-translator --output json | jq -r '.status.url'
+When configured, `download_url` in the response will point directly to the COS object:
 ```
-
-### 2. Update the server URL in `openapi-spec.json`
-
-Open `openapi-spec.json` and replace the `servers` block near the bottom of the file:
-
-```json
-"servers": [
-  {
-    "url": "https://<your-app>.<region>.codeengine.appdomain.cloud"
-  }
-]
+https://s3.us-south.cloud-object-storage.appdomain.cloud/your-bucket/translated/translated_XXXX.pdf
 ```
-
-### 3. Import into watsonx Assistant
-
-1. In watsonx Assistant, go to **Integrations → Extensions → Build custom extension**
-2. Upload `openapi-spec.json`
-3. Follow the prompts to authenticate with your API key and enable the extension
