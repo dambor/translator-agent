@@ -121,15 +121,30 @@ echo "==> Code Engine project..."
 CURRENT_CE_PROJECT=$(ibmcloud ce project current --output json 2>/dev/null \
   | jq -r '.name // empty' 2>/dev/null || true)
 
+ce_select_or_create() {
+  local name="$1"
+  if ibmcloud ce project select --name "$name" 2>/dev/null; then
+    return 0
+  fi
+  echo "    Project '$name' not found."
+  if confirm "    Create new Code Engine project '$name'?"; then
+    ibmcloud ce project create --name "$name"
+    ibmcloud ce project select --name "$name"
+  else
+    echo "Aborted."
+    exit 1
+  fi
+}
+
 if [[ -n "$CURRENT_CE_PROJECT" ]]; then
   echo "    Currently selected: $CURRENT_CE_PROJECT"
   if ! confirm "    Deploy to this project?"; then
     read -rp "    Enter Code Engine project name: " CURRENT_CE_PROJECT
-    ibmcloud ce project select --name "$CURRENT_CE_PROJECT"
+    ce_select_or_create "$CURRENT_CE_PROJECT"
   fi
 else
   read -rp "    No project selected. Enter Code Engine project name: " CURRENT_CE_PROJECT
-  ibmcloud ce project select --name "$CURRENT_CE_PROJECT"
+  ce_select_or_create "$CURRENT_CE_PROJECT"
 fi
 echo ""
 
