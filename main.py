@@ -240,6 +240,30 @@ class BucketSource(BaseModel):
     )
 
 
+class TranslatePdfBase64Request(BaseModel):
+    """Translate a PDF supplied as a base64-encoded string — preferred for AI orchestration tools."""
+    file: str = Field(
+        ...,
+        description="Base64-encoded PDF file content",
+    )
+    filename: Optional[str] = Field(
+        default="document.pdf",
+        description="Original filename (used to name the output PDF)",
+    )
+    model_id: Optional[str] = Field(
+        default=None,
+        description="watsonx.ai model ID (see /api/v1/models). Defaults to granite-3-8b-instruct.",
+    )
+    region: Optional[str] = Field(
+        default=None,
+        description="watsonx.ai region URL. Defaults to WATSONX_URL env var.",
+    )
+    project_id: Optional[str] = Field(
+        default=None,
+        description="watsonx project ID. Defaults to WATSONX_PROJECT_ID env var.",
+    )
+
+
 class TranslateFromSourceRequest(BaseModel):
     """Translate a PDF referenced by a local path, HTTP URL, or cloud bucket object."""
     source: Union[FilePathSource, URLSource, BucketSource] = Field(
@@ -774,6 +798,79 @@ async def translate_pdf(
 
     # 5. Generate English PDF (upload to COS if configured, else serve locally)
     download_url = finalize_translated_pdf(translated_pages, file.filename or "document", str(request.base_url))
+    logger.info(f"Translation complete: {len(translated_pages)} pages → {download_url}")
+
+    return TranslateResponse(
+        message="Translation complete",
+        pages_translated=len(translated_pages),
+        model_used=model_id,
+        region=watsonx_url,
+        download_url=download_url,
+        pages=page_details,
+    )
+
+
+@app.post(
+    "/api/v1/translate/pdf-base64",
+    response_model=TranslateResponse,
+    tags=["Translation"],
+    summary="Translate a Japanese PDF supplied as base64 (JSON body)",
+    description=(
+        "Send a base64-encoded Japanese PDF in a JSON body. "
+        "Intended for AI orchestration tools (e.g. watsonx Orchestrate) that cannot "
+        "perform multipart file uploads. The agent decodes the PDF, translates each "
+        "page, and returns a downloadable English PDF."
+    ),
+)
+async def translate_pdf_base64(request: Request, body: TranslatePdfBase64Request):
+    import base64
+
+    model_id = body.model_id or ModelID.GRANITE_3_8B_INSTRUCT.value
+    watsonx_url = body.region or DEFAULT_WATSONX_URL
+    wx_project_id = body.project_id or WATSONX_PROJECT_ID
+
+    if not wx_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Project ID required. Set WATSONX_PROJECT_ID env var or pass as 'project_id'.",
+        )
+
+    # Decode base64 → bytes
+    try:
+        file_bytes = base64.b64decode(body.file)
+    except Exception:
+        raise HTTPException(status_code=400, detail="'file' is not valid base64-encoded content.")
+
+    if not file_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Decoded content is not a valid PDF.")
+
+    filename = body.filename or "document.pdf"
+    logger.info(f"Received base64 PDF: {filename} ({len(file_bytes)} bytes)")
+
+    pages = extract_text_from_pdf(file_bytes)
+    if not pages:
+        raise HTTPException(
+            status_code=422,
+            detail="No extractable text found in the PDF. Ensure it contains selectable text (not scanned images).",
+        )
+
+    token = token_manager.get_token()
+    translated_pages = []
+    page_details = []
+
+    for i, page_text in enumerate(pages):
+        logger.info(f"Translating page {i + 1}/{len(pages)}...")
+        translated = translate_page(page_text, model_id, token, watsonx_url, wx_project_id)
+        translated_pages.append(translated)
+        page_details.append(
+            TranslationPageDetail(
+                page=i + 1,
+                source_chars=len(page_text),
+                translated_chars=len(translated),
+            )
+        )
+
+    download_url = finalize_translated_pdf(translated_pages, filename, str(request.base_url))
     logger.info(f"Translation complete: {len(translated_pages)} pages → {download_url}")
 
     return TranslateResponse(
