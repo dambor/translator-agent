@@ -6,16 +6,17 @@ pydantic>=2.10.0
 python-dotenv>=1.0.1
 boto3>=1.35.0
 
-# Document extraction (multi-format, OCR-capable)
-docling>=2.0.0
+# PDF extraction and generation
+pypdf>=4.3.0
+reportlab>=4.2.0
 
-# Format-specific reconstruction
+# OCR fallback for scanned PDFs
+pdf2image>=1.17.0
+pytesseract>=0.3.13
+Pillow>=10.0.0
+
+# Format-specific extraction + reconstruction
 python-docx>=1.1.0
 python-pptx>=1.0.0
 openpyxl>=3.1.0
-
-# PDF output generation
-reportlab>=4.2.0
-
-# Fallback PDF text extraction
-pypdf>=4.3.0
+beautifulsoup4>=4.12.0

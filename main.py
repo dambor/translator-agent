@@ -42,47 +42,22 @@ from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
 load_dotenv()
 
-# ── Optional format-specific imports ────────────────────────────────
+# ── Format-specific imports ──────────────────────────────────────────
 
-try:
-    from docling.document_converter import DocumentConverter
-    DOCLING_AVAILABLE = True
-except ImportError:
-    DOCLING_AVAILABLE = False
-
-try:
-    from pypdf import PdfReader
-    PYPDF_AVAILABLE = True
-except ImportError:
-    PYPDF_AVAILABLE = False
-
-try:
-    from docx import Document as DocxDocument
-    DOCX_AVAILABLE = True
-except ImportError:
-    DOCX_AVAILABLE = False
-
-try:
-    from pptx import Presentation
-    PPTX_AVAILABLE = True
-except ImportError:
-    PPTX_AVAILABLE = False
-
-try:
-    from openpyxl import load_workbook
-    XLSX_AVAILABLE = True
-except ImportError:
-    XLSX_AVAILABLE = False
+from pypdf import PdfReader
+from docx import Document as DocxDocument
+from pptx import Presentation
+from openpyxl import load_workbook
+from bs4 import BeautifulSoup
+import pytesseract
+from pdf2image import convert_from_bytes
+from PIL import Image
 
 # ── Logging ─────────────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("watsonx-translator")
-
-logger.info(
-    "Format support — docling:%s pypdf:%s docx:%s pptx:%s xlsx:%s",
-    DOCLING_AVAILABLE, PYPDF_AVAILABLE, DOCX_AVAILABLE, PPTX_AVAILABLE, XLSX_AVAILABLE,
-)
+logger.info("Translator agent starting — PDF/DOCX/XLSX/PPTX/HTML/MD/TXT support active")
 
 # ── Configuration ───────────────────────────────────────────────────
 
@@ -138,6 +113,21 @@ class RegionURL(str, Enum):
     EU_DE    = "https://eu-de.ml.cloud.ibm.com"
     EU_GB    = "https://eu-gb.ml.cloud.ibm.com"
     JP_TOK   = "https://jp-tok.ml.cloud.ibm.com"
+
+
+# Tesseract language codes for OCR (source_lang → tesseract code)
+TESSERACT_LANG = {
+    "japanese":   "jpn",
+    "english":    "eng",
+    "portuguese": "por",
+    "spanish":    "spa",
+    "french":     "fra",
+    "german":     "deu",
+    "italian":    "ita",
+    "korean":     "kor",
+    "chinese":    "chi_sim",
+    "auto":       "jpn+eng+por+spa+fra+deu",  # try the most common packs
+}
 
 
 # ── Dynamic prompt builder ───────────────────────────────────────────
@@ -311,121 +301,88 @@ token_manager = IAMTokenManager()
 
 # ── Document extraction ──────────────────────────────────────────────
 
-def _docling_extract(file_bytes: bytes, filename: str) -> list[str]:
-    """Extract text per page using docling (handles PDFs, DOCX, PPTX, HTML, etc.)."""
-    suffix = Path(filename).suffix.lower() or ".bin"
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+def _ocr_pdf(file_bytes: bytes, source_lang: str = "auto") -> list[str]:
+    """OCR fallback: convert each PDF page to an image and run Tesseract."""
+    lang_code = TESSERACT_LANG.get(source_lang.lower(), "eng")
+    logger.info("OCR fallback: converting PDF pages to images (lang=%s)...", lang_code)
     try:
-        tmp.write(file_bytes)
-        tmp.close()
-
-        converter = DocumentConverter()
-        result = converter.convert(tmp.name)
-        doc = result.document
-
-        # Group text elements by page number
-        page_buckets: dict[int, list[str]] = {}
-        for item in doc.texts:
-            text = getattr(item, "text", None)
-            if not text or not text.strip():
-                continue
-            page_no = 1
-            if getattr(item, "prov", None):
-                page_no = item.prov[0].page_no
-            page_buckets.setdefault(page_no, []).append(text.strip())
-
-        # Also capture tables as markdown
-        for table in doc.tables:
-            page_no = 1
-            if getattr(table, "prov", None):
-                page_no = table.prov[0].page_no
-            try:
-                md = table.export_to_markdown()
-                if md.strip():
-                    page_buckets.setdefault(page_no, []).append(md)
-            except Exception:
-                pass
-
-        if not page_buckets:
-            return []
-        return ["\n\n".join(texts) for _, texts in sorted(page_buckets.items())]
-
+        images = convert_from_bytes(file_bytes, dpi=300)
     except Exception as exc:
-        logger.warning("docling extraction failed: %s", exc)
-        return []
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+        raise HTTPException(status_code=422, detail=f"Could not rasterize PDF for OCR: {exc}")
+
+    pages = []
+    for i, img in enumerate(images):
+        text = pytesseract.image_to_string(img, lang=lang_code)
+        if text and text.strip():
+            pages.append(text.strip())
+            logger.info("OCR page %d: %d chars", i + 1, len(text))
+        else:
+            logger.warning("OCR page %d: no text detected", i + 1)
+    return pages
 
 
-def _pypdf_extract(file_bytes: bytes) -> list[str]:
-    """Fallback PDF text extraction via pypdf."""
-    if not PYPDF_AVAILABLE:
-        return []
+def _extract_pdf(file_bytes: bytes, source_lang: str = "auto") -> list[str]:
+    """Extract text from a PDF. Tries the text layer first; falls back to OCR for scanned pages."""
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Failed to read PDF: {exc}")
 
     pages = []
+    scanned_pages: list[int] = []          # page indices with no text layer
+
     for i, page in enumerate(reader.pages):
         text = page.extract_text()
         if text and text.strip():
-            pages.append(text.strip())
-            logger.info("Page %d: extracted %d chars (pypdf)", i + 1, len(text))
+            pages.append((i, text.strip()))
+            logger.info("Page %d: %d chars (text layer)", i + 1, len(text))
         else:
-            logger.warning("Page %d: no text (pypdf)", i + 1)
-    return pages
+            pages.append((i, None))
+            scanned_pages.append(i)
+            logger.warning("Page %d: no text layer — will OCR", i + 1)
+
+    # OCR only the pages that had no text
+    if scanned_pages:
+        logger.info("Running OCR on %d scanned page(s)...", len(scanned_pages))
+        try:
+            images = convert_from_bytes(file_bytes, dpi=300)
+            lang_code = TESSERACT_LANG.get(source_lang.lower(), "eng")
+            for idx in scanned_pages:
+                if idx < len(images):
+                    ocr_text = pytesseract.image_to_string(images[idx], lang=lang_code)
+                    if ocr_text and ocr_text.strip():
+                        pages[idx] = (idx, ocr_text.strip())
+                        logger.info("OCR page %d: %d chars", idx + 1, len(ocr_text))
+        except Exception as exc:
+            logger.error("OCR failed: %s — scanned pages will be skipped", exc)
+
+    result = [text for _, text in sorted(pages) if text]
+    return result
 
 
-def extract_pages(file_bytes: bytes, filename: str) -> list[str]:
-    """Extract text pages from any supported document format."""
+def _extract_html(file_bytes: bytes) -> list[str]:
+    """Extract visible text from an HTML file."""
+    soup = BeautifulSoup(file_bytes.decode("utf-8", errors="replace"), "html.parser")
+    text = soup.get_text(separator="\n").strip()
+    return [text] if text else []
+
+
+def _extract_text(file_bytes: bytes) -> list[str]:
+    """Extract plain text (Markdown, TXT)."""
+    text = file_bytes.decode("utf-8", errors="replace").strip()
+    return [text] if text else []
+
+
+def extract_pages(file_bytes: bytes, filename: str, source_lang: str = "auto") -> list[str]:
+    """Extract text from a document for the PDF-rebuild path (PDF, HTML, MD, TXT)."""
     ext = Path(filename).suffix.lower()
-
-    if ext in (".docx", ".pptx", ".html", ".htm", ".md", ".txt") and DOCLING_AVAILABLE:
-        pages = _docling_extract(file_bytes, filename)
-        if pages:
-            logger.info("docling extracted %d chunks from %s", len(pages), filename)
-            return pages
-
-    # For PDFs: try docling first (better layout + table parsing), fall back to pypdf
     if ext == ".pdf":
-        if DOCLING_AVAILABLE:
-            pages = _docling_extract(file_bytes, filename)
-            if pages:
-                logger.info("docling extracted %d pages from PDF", len(pages))
-                return pages
-            logger.warning("docling returned no text; falling back to pypdf")
-        return _pypdf_extract(file_bytes)
-
-    # XLSX/XLS: extract via openpyxl (docling doesn't support spreadsheets)
-    if ext in (".xlsx", ".xls") and XLSX_AVAILABLE:
-        return _xlsx_extract_text(file_bytes)
-
-    # Generic fallback
-    if DOCLING_AVAILABLE:
-        return _docling_extract(file_bytes, filename)
-
-    raise HTTPException(
-        status_code=415,
-        detail=f"Cannot extract text from '{ext}'. Install docling: pip install docling",
-    )
-
-
-def _xlsx_extract_text(file_bytes: bytes) -> list[str]:
-    """Extract all string cell values from an Excel workbook as a single page."""
-    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
-    chunks = []
-    for ws in wb.worksheets:
-        sheet_lines = [f"## Sheet: {ws.title}"]
-        for row in ws.iter_rows(values_only=True):
-            cells = [str(c) for c in row if c is not None and str(c).strip()]
-            if cells:
-                sheet_lines.append("\t".join(cells))
-        chunks.append("\n".join(sheet_lines))
-    return ["\n\n".join(chunks)] if chunks else []
+        return _extract_pdf(file_bytes, source_lang)
+    if ext in (".html", ".htm"):
+        return _extract_html(file_bytes)
+    if ext in (".md", ".txt"):
+        return _extract_text(file_bytes)
+    raise HTTPException(status_code=415, detail=f"Unsupported format for text extraction: '{ext}'")
 
 
 # ── Text chunking ────────────────────────────────────────────────────
@@ -892,7 +849,7 @@ async def translate_document(
 
     else:
         # PDF and text-based formats: extract → translate pages → rebuild as PDF
-        pages = extract_pages(file_bytes, filename)
+        pages = extract_pages(file_bytes, filename, source_lang)
         if not pages:
             raise HTTPException(
                 status_code=422,
@@ -971,7 +928,7 @@ async def translate_pdf(
     file_bytes = await file.read()
     logger.info("PDF upload: %s (%d bytes) | %s → %s", filename, len(file_bytes), source_lang, target_lang)
 
-    pages = extract_pages(file_bytes, filename)
+    pages = extract_pages(file_bytes, filename, source_lang)
     if not pages:
         raise HTTPException(
             status_code=422,
@@ -1053,7 +1010,7 @@ async def translate_pdf_base64(request: Request, body: TranslatePdfBase64Request
         output_bytes = translate_pptx(file_bytes, fn)
         output_ext = ".pptx"
     else:
-        pages = extract_pages(file_bytes, filename)
+        pages = extract_pages(file_bytes, filename, source_lang)
         if not pages:
             raise HTTPException(status_code=422, detail="No extractable text found.")
 
@@ -1120,7 +1077,7 @@ async def translate_from_source(request: Request, body: TranslateFromSourceReque
         output_bytes = translate_pptx(file_bytes, fn)
         output_ext = ".pptx"
     else:
-        pages = extract_pages(file_bytes, filename)
+        pages = extract_pages(file_bytes, filename, source_lang)
         if not pages:
             raise HTTPException(status_code=422, detail="No extractable text found.")
 
