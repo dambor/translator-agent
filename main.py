@@ -1,14 +1,11 @@
 """
 watsonx AI Translator Agent
 ============================
-Japanese PDF → English PDF translation using IBM watsonx.ai foundation models.
+Multi-format document translation using IBM watsonx.ai foundation models.
 Exposed as an OpenAPI-compatible REST API (FastAPI).
 
-Supports model selection at request time:
-  - IBM Granite (multilingual, instruct)
-  - Meta Llama 3.x
-  - Mistral / Mixtral
-  - And any other watsonx.ai-hosted model
+Supported input formats: PDF, DOCX, XLSX, PPTX, HTML, Markdown, plain text
+Supported language pairs: any language ↔ any language (auto-detection supported)
 
 Usage:
   pip install -r requirements.txt
@@ -20,276 +17,271 @@ Swagger UI:  http://localhost:8000/docs
 OpenAPI JSON: http://localhost:8000/openapi.json
 """
 
-import os
 import io
+import os
 import re
 import tempfile
 import logging
 import unicodedata
 from datetime import date
 from enum import Enum
-from typing import Literal, Optional, Union
+from pathlib import Path
+from typing import Callable, Literal, Optional, Union
 
 import boto3
-from botocore.exceptions import BotoCoreError, ClientError
-from dotenv import load_dotenv
 import requests
-
-# Load .env file
-load_dotenv()
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Query
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from pypdf import PdfReader
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 from reportlab.lib.units import inch
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
+
+load_dotenv()
+
+# ── Optional format-specific imports ────────────────────────────────
+
+try:
+    from docling.document_converter import DocumentConverter
+    DOCLING_AVAILABLE = True
+except ImportError:
+    DOCLING_AVAILABLE = False
+
+try:
+    from pypdf import PdfReader
+    PYPDF_AVAILABLE = True
+except ImportError:
+    PYPDF_AVAILABLE = False
+
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
+try:
+    from pptx import Presentation
+    PPTX_AVAILABLE = True
+except ImportError:
+    PPTX_AVAILABLE = False
+
+try:
+    from openpyxl import load_workbook
+    XLSX_AVAILABLE = True
+except ImportError:
+    XLSX_AVAILABLE = False
 
 # ── Logging ─────────────────────────────────────────────────────────
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("watsonx-translator")
 
+logger.info(
+    "Format support — docling:%s pypdf:%s docx:%s pptx:%s xlsx:%s",
+    DOCLING_AVAILABLE, PYPDF_AVAILABLE, DOCX_AVAILABLE, PPTX_AVAILABLE, XLSX_AVAILABLE,
+)
+
 # ── Configuration ───────────────────────────────────────────────────
 
-IBM_CLOUD_API_KEY = os.getenv("IBM_CLOUD_API_KEY", "")
-WATSONX_PROJECT_ID = os.getenv("WATSONX_PROJECT_ID", "")
-WATSONX_API_VERSION = os.getenv("WATSONX_API_VERSION", "2024-05-01")
+IBM_CLOUD_API_KEY    = os.getenv("IBM_CLOUD_API_KEY", "")
+WATSONX_PROJECT_ID   = os.getenv("WATSONX_PROJECT_ID", "")
+WATSONX_API_VERSION  = os.getenv("WATSONX_API_VERSION", "2024-05-01")
+DEFAULT_WATSONX_URL  = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
+CHUNK_SIZE           = int(os.getenv("CHUNK_SIZE", "3000"))
 
-# Default region; can be overridden per-request
-DEFAULT_WATSONX_URL = os.getenv("WATSONX_URL", "https://us-south.ml.cloud.ibm.com")
-
-# Chunk size for splitting long pages (chars). Keeps prompts within context window.
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "3000"))
-
-# Output bucket (IBM COS / S3) — when set, translated PDFs are uploaded here
-# and download_url points directly to the object instead of the local endpoint.
-OUTPUT_COS_ENDPOINT  = os.getenv("OUTPUT_COS_ENDPOINT", "")   # e.g. https://s3.us-south.cloud-object-storage.appdomain.cloud
-OUTPUT_COS_BUCKET    = os.getenv("OUTPUT_COS_BUCKET", "")      # e.g. prudential-langflow
+OUTPUT_COS_ENDPOINT   = os.getenv("OUTPUT_COS_ENDPOINT", "")
+OUTPUT_COS_BUCKET     = os.getenv("OUTPUT_COS_BUCKET", "")
 OUTPUT_COS_ACCESS_KEY = os.getenv("OUTPUT_COS_ACCESS_KEY") or os.getenv("AWS_ACCESS_KEY_ID", "")
 OUTPUT_COS_SECRET_KEY = os.getenv("OUTPUT_COS_SECRET_KEY") or os.getenv("AWS_SECRET_ACCESS_KEY", "")
 
+# ── Supported formats ────────────────────────────────────────────────
 
-# ── Supported Models ────────────────────────────────────────────────
+SUPPORTED_EXTENSIONS = {
+    ".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".ppt",
+    ".html", ".htm", ".md", ".txt",
+}
+
+MIME_TYPES = {
+    ".pdf":  "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls":  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".ppt":  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".html": "text/html",
+    ".htm":  "text/html",
+    ".md":   "text/markdown",
+    ".txt":  "text/plain",
+}
+
+# ── Supported Models ─────────────────────────────────────────────────
 
 class ModelID(str, Enum):
-    """Supported watsonx.ai foundation models for translation."""
-
-    # IBM Granite
-    GRANITE_3_8B_INSTRUCT = "ibm/granite-3-8b-instruct"
-    GRANITE_3_2B_INSTRUCT = "ibm/granite-3-2b-instruct"
+    GRANITE_3_8B_INSTRUCT    = "ibm/granite-3-8b-instruct"
+    GRANITE_3_2B_INSTRUCT    = "ibm/granite-3-2b-instruct"
     GRANITE_20B_MULTILINGUAL = "ibm/granite-20b-multilingual"
-    GRANITE_13B_INSTRUCT = "ibm/granite-13b-instruct-v2"
-
-    # Meta Llama
-    LLAMA_3_1_70B_INSTRUCT = "meta-llama/llama-3-1-70b-instruct"
-    LLAMA_3_1_8B_INSTRUCT = "meta-llama/llama-3-1-8b-instruct"
-    LLAMA_3_70B_INSTRUCT = "meta-llama/llama-3-70b-instruct"
-
-    # Mistral
-    MISTRAL_LARGE = "mistralai/mistral-large"
-    MIXTRAL_8X7B_INSTRUCT = "mistralai/mixtral-8x7b-instruct-v01"
-
-    # Others
-    FLAN_UL2 = "google/flan-ul2"
-    ELYZA_JAPANESE_LLAMA_2_7B = "elyza/elyza-japanese-llama-2-7b-instruct"
+    GRANITE_13B_INSTRUCT     = "ibm/granite-13b-instruct-v2"
+    LLAMA_3_1_70B_INSTRUCT   = "meta-llama/llama-3-1-70b-instruct"
+    LLAMA_3_1_8B_INSTRUCT    = "meta-llama/llama-3-1-8b-instruct"
+    LLAMA_3_70B_INSTRUCT     = "meta-llama/llama-3-70b-instruct"
+    MISTRAL_LARGE            = "mistralai/mistral-large"
+    MIXTRAL_8X7B_INSTRUCT    = "mistralai/mixtral-8x7b-instruct-v01"
+    FLAN_UL2                 = "google/flan-ul2"
+    ELYZA_JAPANESE_LLAMA_2   = "elyza/elyza-japanese-llama-2-7b-instruct"
 
 
 class RegionURL(str, Enum):
-    """IBM Cloud regions hosting watsonx.ai."""
     US_SOUTH = "https://us-south.ml.cloud.ibm.com"
-    EU_DE = "https://eu-de.ml.cloud.ibm.com"
-    EU_GB = "https://eu-gb.ml.cloud.ibm.com"
-    JP_TOK = "https://jp-tok.ml.cloud.ibm.com"
+    EU_DE    = "https://eu-de.ml.cloud.ibm.com"
+    EU_GB    = "https://eu-gb.ml.cloud.ibm.com"
+    JP_TOK   = "https://jp-tok.ml.cloud.ibm.com"
 
 
-# ── Prompt Templates (per model family) ─────────────────────────────
+# ── Dynamic prompt builder ───────────────────────────────────────────
 
-PROMPT_TEMPLATES = {
-    "granite": (
-        "<|system|>\n"
-        "You are an expert Japanese-to-English translator. Translate the following "
-        "Japanese text into natural, fluent English. Preserve paragraph structure, "
-        "formatting, and technical terminology. Output ONLY the English translation.\n"
-        "<|user|>\n{text}\n<|assistant|>\n"
-    ),
-    "llama": (
-        "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-        "You are an expert Japanese-to-English translator. Translate the following "
-        "Japanese text into natural, fluent English. Preserve paragraph structure, "
-        "formatting, and technical terminology. Output ONLY the English translation."
-        "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
-        "{text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-    ),
-    "mistral": (
-        "[INST] You are an expert Japanese-to-English translator. Translate the "
-        "following Japanese text into natural, fluent English. Preserve paragraph "
-        "structure, formatting, and technical terminology. Output ONLY the English "
-        "translation.\n\n{text} [/INST]"
-    ),
-    "generic": (
-        "Translate the following Japanese text to English. Preserve formatting and "
-        "paragraph structure. Output only the English translation.\n\n"
-        "Japanese:\n{text}\n\nEnglish:\n"
-    ),
-}
+def _build_prompt(text: str, source_lang: str, target_lang: str, model_id: str) -> str:
+    """Build a model-family–aware translation prompt for any language pair."""
+    if source_lang.strip().lower() == "auto":
+        instruction = (
+            f"Detect the source language and translate the following text to {target_lang}. "
+            "Preserve paragraph structure and all formatting. "
+            "Output ONLY the translation, with no explanations or notes."
+        )
+    else:
+        instruction = (
+            f"Translate the following {source_lang} text to {target_lang}. "
+            "Preserve paragraph structure and all formatting. "
+            "Output ONLY the translation, with no explanations or notes."
+        )
 
-
-def _get_prompt_template(model_id: str) -> str:
-    """Select the correct prompt template based on model family."""
     model_lower = model_id.lower()
     if "granite" in model_lower:
-        return PROMPT_TEMPLATES["granite"]
+        return f"<|system|>\n{instruction}\n<|user|>\n{text}\n<|assistant|>\n"
     elif "llama" in model_lower:
-        return PROMPT_TEMPLATES["llama"]
+        return (
+            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+            f"{instruction}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
+            f"{text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
     elif "mistral" in model_lower or "mixtral" in model_lower:
-        return PROMPT_TEMPLATES["mistral"]
-    return PROMPT_TEMPLATES["generic"]
+        return f"[INST] {instruction}\n\n{text} [/INST]"
+    return f"{instruction}\n\nText:\n{text}\n\nTranslation:\n"
 
 
-# ── Response Schemas ────────────────────────────────────────────────
+# ── Response / Request schemas ───────────────────────────────────────
 
 class ModelInfo(BaseModel):
     id: str
     name: str
     family: str
 
+
 class ModelsResponse(BaseModel):
     models: list[ModelInfo]
+
+
+class FormatInfo(BaseModel):
+    extension: str
+    mime_type: str
+    requires: str
+
+
+class FormatsResponse(BaseModel):
+    formats: list[FormatInfo]
+
 
 class TranslationPageDetail(BaseModel):
     page: int
     source_chars: int
     translated_chars: int
 
+
 class TranslateResponse(BaseModel):
     message: str
+    source_lang: str
+    target_lang: str
     pages_translated: int
     model_used: str
     region: str
     download_url: str
     pages: list[TranslationPageDetail]
 
+
 class TranslateTextRequest(BaseModel):
-    """Request body for direct text translation (non-PDF)."""
-    text: str = Field(..., description="Japanese text to translate")
+    text: str = Field(..., description="Text to translate")
+    source_lang: Optional[str] = Field(default="auto", description="Source language (e.g. 'Japanese'). Use 'auto' to detect.")
+    target_lang: Optional[str] = Field(default="English", description="Target language (e.g. 'English', 'Spanish')")
     model_id: Optional[str] = Field(default=None, description="watsonx model ID")
     region: Optional[str] = Field(default=None, description="watsonx region URL")
-    filename: Optional[str] = Field(default=None, description="Original filename (without extension). Used to name the output PDF, e.g. 'japanese-doc'.")
+    filename: Optional[str] = Field(default=None, description="Output filename stem")
+
 
 class TranslateTextResponse(BaseModel):
     translated_text: str
+    source_lang: str
+    target_lang: str
     model_used: str
     source_chars: int
     translated_chars: int
-    download_url: Optional[str] = Field(
-        default=None,
-        description="URL to download the translated content as a PDF (when the input text is long enough to warrant a PDF)",
-    )
+    download_url: Optional[str] = None
+
 
 class HealthResponse(BaseModel):
     status: str
     watsonx_url: str
     project_configured: bool
+    docling_available: bool
+    formats_available: list[str]
 
 
-# ── Upload-source schemas ────────────────────────────────────────────
+# ── Upload-source schemas (backward compat) ──────────────────────────
 
 class FilePathSource(BaseModel):
-    """Read the PDF from a path accessible to the server."""
     type: Literal["file_path"]
-    path: str = Field(..., description="Absolute or relative path to the PDF on the server filesystem")
+    path: str = Field(..., description="Absolute or relative path to the document on the server filesystem")
 
 
 class URLSource(BaseModel):
-    """Download the PDF from any HTTP/HTTPS URL (e.g. a watsonx Assistant file attachment URL)."""
     type: Literal["url"]
-    url: str = Field(..., description="Publicly accessible or pre-signed URL pointing to the PDF")
-    headers: Optional[dict] = Field(
-        default=None,
-        description="Optional HTTP headers (e.g. Authorization) needed to download the file",
-    )
+    url: str = Field(..., description="Publicly accessible or pre-signed URL pointing to the document")
+    headers: Optional[dict] = Field(default=None, description="Optional HTTP headers (e.g. Authorization)")
 
 
 class BucketSource(BaseModel):
-    """Read the PDF from an S3-compatible bucket (IBM COS, AWS S3, MinIO, …)."""
     type: Literal["bucket"]
-    endpoint_url: Optional[str] = Field(
-        default=None,
-        description=(
-            "S3-compatible endpoint URL. Required for IBM COS "
-            "(e.g. https://s3.us-south.cloud-object-storage.appdomain.cloud). "
-            "Leave empty for AWS S3."
-        ),
-    )
-    bucket: str = Field(..., description="Bucket name")
-    key: str = Field(..., description="Object key / path inside the bucket")
-    access_key_id: Optional[str] = Field(
-        default=None,
-        description="AWS_ACCESS_KEY_ID / IBM HMAC access key. Falls back to env var.",
-    )
-    secret_access_key: Optional[str] = Field(
-        default=None,
-        description="AWS_SECRET_ACCESS_KEY / IBM HMAC secret key. Falls back to env var.",
-    )
-    region_name: Optional[str] = Field(
-        default=None,
-        description="Bucket region (e.g. 'us-south'). Optional for IBM COS.",
-    )
+    endpoint_url: Optional[str] = Field(default=None)
+    bucket: str
+    key: str
+    access_key_id: Optional[str] = Field(default=None)
+    secret_access_key: Optional[str] = Field(default=None)
+    region_name: Optional[str] = Field(default=None)
 
 
 class TranslatePdfBase64Request(BaseModel):
-    """Translate a PDF supplied as a base64-encoded string — preferred for AI orchestration tools."""
-    file: str = Field(
-        ...,
-        description="Base64-encoded PDF file content",
-    )
-    filename: Optional[str] = Field(
-        default="document.pdf",
-        description="Original filename (used to name the output PDF)",
-    )
-    model_id: Optional[str] = Field(
-        default=None,
-        description="watsonx.ai model ID (see /api/v1/models). Defaults to granite-3-8b-instruct.",
-    )
-    region: Optional[str] = Field(
-        default=None,
-        description="watsonx.ai region URL. Defaults to WATSONX_URL env var.",
-    )
-    project_id: Optional[str] = Field(
-        default=None,
-        description="watsonx project ID. Defaults to WATSONX_PROJECT_ID env var.",
-    )
+    file: str = Field(..., description="Base64-encoded file content")
+    filename: Optional[str] = Field(default="document.pdf")
+    source_lang: Optional[str] = Field(default="Japanese", description="Source language")
+    target_lang: Optional[str] = Field(default="English", description="Target language")
+    model_id: Optional[str] = Field(default=None)
+    region: Optional[str] = Field(default=None)
+    project_id: Optional[str] = Field(default=None)
 
 
 class TranslateFromSourceRequest(BaseModel):
-    """Translate a PDF referenced by a local path, HTTP URL, or cloud bucket object."""
-    source: Union[FilePathSource, URLSource, BucketSource] = Field(
-        ...,
-        discriminator="type",
-        description="PDF source — a server file path, an HTTP/HTTPS URL, or a bucket object reference",
-    )
-    model_id: Optional[str] = Field(
-        default=None,
-        description="watsonx.ai model ID (see /api/v1/models). Defaults to granite-3-8b-instruct.",
-    )
-    region: Optional[str] = Field(
-        default=None,
-        description="watsonx.ai region URL. Defaults to WATSONX_URL env var.",
-    )
-    project_id: Optional[str] = Field(
-        default=None,
-        description="watsonx project ID. Defaults to WATSONX_PROJECT_ID env var.",
-    )
+    source: Union[FilePathSource, URLSource, BucketSource] = Field(..., discriminator="type")
+    source_lang: Optional[str] = Field(default="Japanese", description="Source language")
+    target_lang: Optional[str] = Field(default="English", description="Target language")
+    model_id: Optional[str] = Field(default=None)
+    region: Optional[str] = Field(default=None)
+    project_id: Optional[str] = Field(default=None)
 
 
-# ── Core Services ───────────────────────────────────────────────────
+# ── IAM Token Manager ────────────────────────────────────────────────
 
 class IAMTokenManager:
-    """Manages IBM Cloud IAM token lifecycle with simple caching."""
-
     def __init__(self):
         self._token: Optional[str] = None
 
@@ -298,10 +290,8 @@ class IAMTokenManager:
         if not key:
             raise HTTPException(
                 status_code=500,
-                detail="IBM_CLOUD_API_KEY not configured. Set it as an env var or pass via header.",
+                detail="IBM_CLOUD_API_KEY not configured.",
             )
-        # In production, cache and refresh based on expiry.
-        # For simplicity, we fetch a new token each time.
         logger.info("Requesting IAM token...")
         resp = requests.post(
             "https://iam.cloud.ibm.com/identity/token",
@@ -319,54 +309,154 @@ class IAMTokenManager:
 token_manager = IAMTokenManager()
 
 
-def extract_text_from_pdf(file_bytes: bytes) -> list[str]:
-    """Extract text from each page of a PDF. Returns list of page texts."""
+# ── Document extraction ──────────────────────────────────────────────
+
+def _docling_extract(file_bytes: bytes, filename: str) -> list[str]:
+    """Extract text per page using docling (handles PDFs, DOCX, PPTX, HTML, etc.)."""
+    suffix = Path(filename).suffix.lower() or ".bin"
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    try:
+        tmp.write(file_bytes)
+        tmp.close()
+
+        converter = DocumentConverter()
+        result = converter.convert(tmp.name)
+        doc = result.document
+
+        # Group text elements by page number
+        page_buckets: dict[int, list[str]] = {}
+        for item in doc.texts:
+            text = getattr(item, "text", None)
+            if not text or not text.strip():
+                continue
+            page_no = 1
+            if getattr(item, "prov", None):
+                page_no = item.prov[0].page_no
+            page_buckets.setdefault(page_no, []).append(text.strip())
+
+        # Also capture tables as markdown
+        for table in doc.tables:
+            page_no = 1
+            if getattr(table, "prov", None):
+                page_no = table.prov[0].page_no
+            try:
+                md = table.export_to_markdown()
+                if md.strip():
+                    page_buckets.setdefault(page_no, []).append(md)
+            except Exception:
+                pass
+
+        if not page_buckets:
+            return []
+        return ["\n\n".join(texts) for _, texts in sorted(page_buckets.items())]
+
+    except Exception as exc:
+        logger.warning("docling extraction failed: %s", exc)
+        return []
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+def _pypdf_extract(file_bytes: bytes) -> list[str]:
+    """Fallback PDF text extraction via pypdf."""
+    if not PYPDF_AVAILABLE:
+        return []
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Failed to read PDF: {e}")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Failed to read PDF: {exc}")
 
     pages = []
     for i, page in enumerate(reader.pages):
         text = page.extract_text()
         if text and text.strip():
             pages.append(text.strip())
-            logger.info(f"Page {i + 1}: extracted {len(text)} chars")
+            logger.info("Page %d: extracted %d chars (pypdf)", i + 1, len(text))
         else:
-            logger.warning(f"Page {i + 1}: no extractable text, skipping")
+            logger.warning("Page %d: no text (pypdf)", i + 1)
     return pages
 
 
+def extract_pages(file_bytes: bytes, filename: str) -> list[str]:
+    """Extract text pages from any supported document format."""
+    ext = Path(filename).suffix.lower()
+
+    if ext in (".docx", ".pptx", ".html", ".htm", ".md", ".txt") and DOCLING_AVAILABLE:
+        pages = _docling_extract(file_bytes, filename)
+        if pages:
+            logger.info("docling extracted %d chunks from %s", len(pages), filename)
+            return pages
+
+    # For PDFs: try docling first (better layout + table parsing), fall back to pypdf
+    if ext == ".pdf":
+        if DOCLING_AVAILABLE:
+            pages = _docling_extract(file_bytes, filename)
+            if pages:
+                logger.info("docling extracted %d pages from PDF", len(pages))
+                return pages
+            logger.warning("docling returned no text; falling back to pypdf")
+        return _pypdf_extract(file_bytes)
+
+    # XLSX/XLS: extract via openpyxl (docling doesn't support spreadsheets)
+    if ext in (".xlsx", ".xls") and XLSX_AVAILABLE:
+        return _xlsx_extract_text(file_bytes)
+
+    # Generic fallback
+    if DOCLING_AVAILABLE:
+        return _docling_extract(file_bytes, filename)
+
+    raise HTTPException(
+        status_code=415,
+        detail=f"Cannot extract text from '{ext}'. Install docling: pip install docling",
+    )
+
+
+def _xlsx_extract_text(file_bytes: bytes) -> list[str]:
+    """Extract all string cell values from an Excel workbook as a single page."""
+    wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    chunks = []
+    for ws in wb.worksheets:
+        sheet_lines = [f"## Sheet: {ws.title}"]
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(c) for c in row if c is not None and str(c).strip()]
+            if cells:
+                sheet_lines.append("\t".join(cells))
+        chunks.append("\n".join(sheet_lines))
+    return ["\n\n".join(chunks)] if chunks else []
+
+
+# ── Text chunking ────────────────────────────────────────────────────
+
 def chunk_text(text: str, max_chars: int = CHUNK_SIZE) -> list[str]:
-    """Split text into chunks, preferring paragraph boundaries."""
     if len(text) <= max_chars:
         return [text]
 
-    chunks = []
-    paragraphs = text.split("\n")
-    current_chunk = ""
-
-    for para in paragraphs:
-        if len(current_chunk) + len(para) + 1 > max_chars and current_chunk:
-            chunks.append(current_chunk.strip())
-            current_chunk = para
+    chunks: list[str] = []
+    current = ""
+    for para in text.split("\n"):
+        if len(current) + len(para) + 1 > max_chars and current:
+            chunks.append(current.strip())
+            current = para
         else:
-            current_chunk += "\n" + para if current_chunk else para
+            current += ("\n" if current else "") + para
 
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
+    if current.strip():
+        chunks.append(current.strip())
 
-    # If any chunk is still too large, hard-split
-    final_chunks = []
+    final: list[str] = []
     for chunk in chunks:
         if len(chunk) > max_chars:
             for i in range(0, len(chunk), max_chars):
-                final_chunks.append(chunk[i : i + max_chars])
+                final.append(chunk[i: i + max_chars])
         else:
-            final_chunks.append(chunk)
+            final.append(chunk)
+    return final
 
-    return final_chunks
 
+# ── Translation core ─────────────────────────────────────────────────
 
 def translate_text(
     text: str,
@@ -374,14 +464,12 @@ def translate_text(
     token: str,
     watsonx_url: str,
     project_id: str,
+    source_lang: str = "auto",
+    target_lang: str = "English",
     temperature: float = 0.1,
     max_new_tokens: int = 4096,
 ) -> str:
-    """Call watsonx.ai text generation API to translate a single chunk."""
-
-    prompt_template = _get_prompt_template(model_id)
-    prompt = prompt_template.format(text=text)
-
+    prompt = _build_prompt(text, source_lang, target_lang, model_id)
     payload = {
         "model_id": model_id,
         "input": prompt,
@@ -395,9 +483,8 @@ def translate_text(
             "stop_sequences": [],
         },
     }
-
     url = f"{watsonx_url}/ml/v1/text/generation?version={WATSONX_API_VERSION}"
-    logger.info(f"Calling watsonx.ai: model={model_id}, chars={len(text)}")
+    logger.info("watsonx call: model=%s chars=%d %s→%s", model_id, len(text), source_lang, target_lang)
 
     resp = requests.post(
         url,
@@ -409,129 +496,191 @@ def translate_text(
         json=payload,
         timeout=180,
     )
-
     if resp.status_code != 200:
-        logger.error(f"watsonx API error {resp.status_code}: {resp.text}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"watsonx.ai API error ({resp.status_code}): {resp.text[:500]}",
-        )
+        logger.error("watsonx error %d: %s", resp.status_code, resp.text)
+        raise HTTPException(status_code=502, detail=f"watsonx.ai API error ({resp.status_code}): {resp.text[:500]}")
 
     results = resp.json().get("results", [])
     if not results:
         raise HTTPException(status_code=502, detail="Empty response from watsonx.ai")
 
     generated = results[0].get("generated_text", "").strip()
-    logger.info(f"Translation received: {len(generated)} chars")
+    logger.info("Translation received: %d chars", len(generated))
     return generated
 
 
 def translate_page(
-    page_text: str, model_id: str, token: str, watsonx_url: str, project_id: str
+    page_text: str,
+    model_id: str,
+    token: str,
+    watsonx_url: str,
+    project_id: str,
+    source_lang: str = "auto",
+    target_lang: str = "English",
 ) -> str:
-    """Translate a full page, chunking if necessary."""
+    """Translate a full page, chunking long content automatically."""
     chunks = chunk_text(page_text)
-    translated_chunks = []
-
+    translated = []
     for i, chunk in enumerate(chunks):
-        logger.info(f"  Translating chunk {i + 1}/{len(chunks)} ({len(chunk)} chars)")
-        translated = translate_text(chunk, model_id, token, watsonx_url, project_id)
-        translated_chunks.append(translated)
+        logger.info("  chunk %d/%d (%d chars)", i + 1, len(chunks), len(chunk))
+        translated.append(translate_text(chunk, model_id, token, watsonx_url, project_id, source_lang, target_lang))
+    return "\n\n".join(translated)
 
-    return "\n\n".join(translated_chunks)
 
+# ── In-place format reconstruction ───────────────────────────────────
+
+def _translate_fn(
+    model_id: str, token: str, watsonx_url: str, project_id: str,
+    source_lang: str, target_lang: str,
+) -> Callable[[str], str]:
+    """Return a callable that translates a string segment."""
+    def _fn(text: str) -> str:
+        if not text or not text.strip():
+            return text
+        return translate_text(text, model_id, token, watsonx_url, project_id, source_lang, target_lang)
+    return _fn
+
+
+def _replace_para_text(para, translated: str) -> None:
+    """Replace all runs in a python-docx paragraph with a single translated run."""
+    if not para.runs:
+        para.add_run(translated)
+        return
+    para.runs[0].text = translated
+    for run in para.runs[1:]:
+        run.text = ""
+
+
+def translate_docx(file_bytes: bytes, fn: Callable[[str], str]) -> bytes:
+    if not DOCX_AVAILABLE:
+        raise HTTPException(status_code=415, detail="python-docx not installed. pip install python-docx")
+
+    doc = DocxDocument(io.BytesIO(file_bytes))
+
+    for para in doc.paragraphs:
+        if para.text.strip():
+            _replace_para_text(para, fn(para.text))
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    if para.text.strip():
+                        _replace_para_text(para, fn(para.text))
+
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def translate_pptx(file_bytes: bytes, fn: Callable[[str], str]) -> bytes:
+    if not PPTX_AVAILABLE:
+        raise HTTPException(status_code=415, detail="python-pptx not installed. pip install python-pptx")
+
+    prs = Presentation(io.BytesIO(file_bytes))
+
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for para in shape.text_frame.paragraphs:
+                full = "".join(r.text for r in para.runs)
+                if not full.strip():
+                    continue
+                translated = fn(full)
+                if para.runs:
+                    para.runs[0].text = translated
+                    for run in para.runs[1:]:
+                        run.text = ""
+                else:
+                    para.add_run(translated)
+
+    out = io.BytesIO()
+    prs.save(out)
+    return out.getvalue()
+
+
+def translate_xlsx(file_bytes: bytes, fn: Callable[[str], str]) -> bytes:
+    if not XLSX_AVAILABLE:
+        raise HTTPException(status_code=415, detail="openpyxl not installed. pip install openpyxl")
+
+    wb = load_workbook(io.BytesIO(file_bytes))
+
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.strip():
+                    cell.value = fn(cell.value)
+
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+# ── PDF generation (ReportLab) ───────────────────────────────────────
 
 def _safe_para(text: str) -> str:
-    """Sanitize text for ReportLab Paragraph: strip control chars, escape XML entities."""
-    # Keep printable chars + normal whitespace (newline, tab, space)
     cleaned = "".join(
         c for c in text
         if c in ("\n", "\t", " ") or not unicodedata.category(c).startswith("C")
     )
-    return (
-        cleaned
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def create_english_pdf(pages: list[str], output_path: str) -> None:
-    """Generate a styled English PDF from translated page texts."""
+def build_translated_pdf(
+    pages: list[str],
+    output_path: str,
+    source_lang: str = "auto",
+    target_lang: str = "English",
+) -> None:
     doc = SimpleDocTemplate(
-        output_path,
-        pagesize=A4,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
-        leftMargin=0.75 * inch,
-        rightMargin=0.75 * inch,
+        output_path, pagesize=A4,
+        topMargin=0.75 * inch, bottomMargin=0.75 * inch,
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
     )
-
     styles = getSampleStyleSheet()
 
     title_style = ParagraphStyle(
-        "DocTitle",
-        parent=styles["Title"],
-        fontSize=18,
-        leading=22,
-        spaceAfter=20,
-        textColor="#1a1a2e",
+        "DocTitle", parent=styles["Title"],
+        fontSize=18, leading=22, spaceAfter=20, textColor="#1a1a2e",
     )
     page_header_style = ParagraphStyle(
-        "PageHeader",
-        parent=styles["Heading2"],
-        fontSize=13,
-        leading=18,
-        spaceAfter=8,
-        spaceBefore=12,
-        textColor="#0f3460",
-        borderWidth=0,
-        borderPadding=0,
+        "PageHeader", parent=styles["Heading2"],
+        fontSize=13, leading=18, spaceAfter=8, spaceBefore=12, textColor="#0f3460",
     )
     body_style = ParagraphStyle(
-        "TranslatedBody",
-        parent=styles["BodyText"],
-        fontSize=11,
-        leading=16,
-        spaceAfter=8,
+        "TranslatedBody", parent=styles["BodyText"],
+        fontSize=11, leading=16, spaceAfter=8,
     )
     meta_style = ParagraphStyle(
-        "MetaInfo",
-        parent=styles["Italic"],
-        fontSize=9,
-        leading=12,
-        textColor="#666666",
-        spaceAfter=16,
+        "MetaInfo", parent=styles["Italic"],
+        fontSize=9, leading=12, textColor="#666666", spaceAfter=16,
     )
 
-    story = []
-    story.append(Paragraph("Translated Document", title_style))
-    story.append(
-        Paragraph(
-            f"Source: Japanese &rarr; English &nbsp;|&nbsp; Pages: {len(pages)}",
-            meta_style,
-        )
-    )
-    story.append(Spacer(1, 0.2 * inch))
+    src = source_lang if source_lang.lower() != "auto" else "detected"
+    story = [
+        Paragraph("Translated Document", title_style),
+        Paragraph(f"Source: {src} &rarr; {target_lang} &nbsp;|&nbsp; Pages: {len(pages)}", meta_style),
+        Spacer(1, 0.2 * inch),
+    ]
 
     for i, page_text in enumerate(pages):
         if i > 0:
             story.append(PageBreak())
         story.append(Paragraph(f"Page {i + 1}", page_header_style))
-
         for para in page_text.split("\n\n"):
             cleaned = para.strip()
             if cleaned:
                 story.append(Paragraph(_safe_para(cleaned), body_style))
-
         story.append(Spacer(1, 0.15 * inch))
 
     doc.build(story)
-    logger.info(f"English PDF created: {output_path}")
+    logger.info("PDF built: %s", output_path)
 
 
-def upload_to_cos(local_path: str, object_key: str) -> str:
-    """Upload a file to the configured output COS bucket. Returns the public object URL."""
+# ── COS / local file management ──────────────────────────────────────
+
+def upload_to_cos(local_path: str, object_key: str, mime_type: str = "application/pdf") -> str:
     s3 = boto3.client(
         "s3",
         endpoint_url=OUTPUT_COS_ENDPOINT,
@@ -540,268 +689,318 @@ def upload_to_cos(local_path: str, object_key: str) -> str:
     )
     with open(local_path, "rb") as fh:
         s3.upload_fileobj(
-            fh,
-            OUTPUT_COS_BUCKET,
-            object_key,
-            ExtraArgs={"ContentType": "application/pdf", "ACL": "public-read"},
+            fh, OUTPUT_COS_BUCKET, object_key,
+            ExtraArgs={"ContentType": mime_type, "ACL": "public-read"},
         )
-    logger.info(f"Uploaded translated PDF to bucket {OUTPUT_COS_BUCKET}/{object_key}")
-    # Use virtual-hosted style URL (bucket.endpoint/key) for public access
-    endpoint_host = OUTPUT_COS_ENDPOINT.replace("https://", "").replace("http://", "")
-    return f"https://{OUTPUT_COS_BUCKET}.{endpoint_host}/{object_key}"
+    logger.info("Uploaded to COS: %s/%s", OUTPUT_COS_BUCKET, object_key)
+    host = OUTPUT_COS_ENDPOINT.replace("https://", "").replace("http://", "")
+    return f"https://{OUTPUT_COS_BUCKET}.{host}/{object_key}"
 
 
-def _output_filename(original_name: str) -> str:
-    """Build output filename: {stem}_translated_YYYYMMDD.pdf"""
-    stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", os.path.splitext(original_name)[0]) if original_name else "document"
+def _output_filename(original_name: str, output_ext: Optional[str] = None) -> str:
+    stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", Path(original_name).stem) if original_name else "document"
+    ext = output_ext or Path(original_name).suffix.lower() or ".pdf"
     today = date.today().strftime("%Y%m%d")
-    return f"{stem}_translated_{today}.pdf"
+    return f"{stem}_translated_{today}{ext}"
 
 
-def finalize_translated_pdf(translated_pages: list[str], original_name: str, base_url: str = "") -> str:
-    """Write translated PDF to temp file, optionally upload to COS. Returns absolute download URL."""
-    output_filename = _output_filename(original_name)
-    output_path = os.path.join(tempfile.gettempdir(), output_filename)
-    create_english_pdf(translated_pages, output_path)
+def save_and_finalize(
+    content: bytes,
+    original_name: str,
+    output_ext: str,
+    base_url: str = "",
+) -> str:
+    """Write bytes to temp file, upload to COS (if configured) or serve locally."""
+    filename = _output_filename(original_name, output_ext)
+    path = os.path.join(tempfile.gettempdir(), filename)
+    with open(path, "wb") as f:
+        f.write(content)
 
     if OUTPUT_COS_ENDPOINT and OUTPUT_COS_BUCKET and OUTPUT_COS_ACCESS_KEY:
-        object_key = f"translated/{output_filename}"
-        return upload_to_cos(output_path, object_key)
+        mime = MIME_TYPES.get(output_ext, "application/octet-stream")
+        return upload_to_cos(path, f"translated/{filename}", mime)
 
-    # Return a fully-qualified URL so Orchestrate / Assistant can present it as a clickable link.
     prefix = base_url.rstrip("/") if base_url else ""
-    return f"{prefix}/api/v1/download/{output_filename}"
+    return f"{prefix}/api/v1/download/{filename}"
 
 
-def load_pdf_bytes_from_source(source: Union[FilePathSource, URLSource, BucketSource]) -> bytes:
-    """Return the raw bytes of a PDF from a file-path, URL, or bucket source."""
+def load_bytes_from_source(source: Union[FilePathSource, URLSource, BucketSource]) -> tuple[bytes, str]:
+    """Fetch document bytes and original filename from any source type."""
     if source.type == "file_path":
         path = source.path
-        if not os.path.isfile(path):
+        if not os.path.exists(path):
             raise HTTPException(status_code=404, detail=f"File not found: {path}")
-        if not path.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
-        with open(path, "rb") as fh:
-            data = fh.read()
-        if not data.startswith(b"%PDF"):
-            raise HTTPException(status_code=400, detail="File does not appear to be a valid PDF.")
-        return data
+        with open(path, "rb") as f:
+            return f.read(), os.path.basename(path)
 
     if source.type == "url":
-        logger.info(f"Downloading PDF from URL: {source.url}")
-        try:
-            resp = requests.get(source.url, headers=source.headers or {}, timeout=60)
-        except requests.RequestException as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to download file: {exc}")
+        headers = source.headers or {}
+        resp = requests.get(source.url, headers=headers, timeout=60)
         if resp.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"URL returned HTTP {resp.status_code}",
-            )
-        content_type = resp.headers.get("Content-Type", "")
-        if "pdf" not in content_type and not source.url.split("?")[0].lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="URL does not point to a PDF file.")
-        if not resp.content.startswith(b"%PDF"):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Downloaded content is not a valid PDF (Content-Type: {content_type}).",
-            )
-        return resp.content
+            raise HTTPException(status_code=502, detail=f"Failed to download URL ({resp.status_code})")
+        filename = source.url.split("?")[0].rstrip("/").split("/")[-1] or "document"
+        return resp.content, filename
 
-    # bucket source
+    # bucket
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=source.endpoint_url,
+        aws_access_key_id=source.access_key_id or OUTPUT_COS_ACCESS_KEY,
+        aws_secret_access_key=source.secret_access_key or OUTPUT_COS_SECRET_KEY,
+        region_name=source.region_name,
+    )
+    buf = io.BytesIO()
     try:
-        s3_kwargs: dict = {}
-        if source.endpoint_url:
-            s3_kwargs["endpoint_url"] = source.endpoint_url
-        if source.region_name:
-            s3_kwargs["region_name"] = source.region_name
-        if source.access_key_id and source.secret_access_key:
-            s3_kwargs["aws_access_key_id"] = source.access_key_id
-            s3_kwargs["aws_secret_access_key"] = source.secret_access_key
-
-        s3 = boto3.client("s3", **s3_kwargs)
-        logger.info(f"Fetching s3://{source.bucket}/{source.key}")
-        response = s3.get_object(Bucket=source.bucket, Key=source.key)
-        data: bytes = response["Body"].read()
-    except ClientError as exc:
-        code = exc.response["Error"]["Code"]
-        raise HTTPException(status_code=404, detail=f"Bucket object not found ({code}): {exc}")
-    except BotoCoreError as exc:
-        raise HTTPException(status_code=502, detail=f"Bucket access error: {exc}")
-
-    if not source.key.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Object key must point to a .pdf file.")
-    return data
+        s3.download_fileobj(source.bucket, source.key, buf)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Bucket download failed: {exc}")
+    return buf.getvalue(), source.key.split("/")[-1]
 
 
-# ── FastAPI Application ─────────────────────────────────────────────
+# ── FastAPI app ──────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="watsonx AI Translator Agent",
+    title="watsonx AI Translator",
     description=(
-        "Translate Japanese PDFs to English using IBM watsonx.ai foundation models. "
-        "Supports model selection at request time (Granite, Llama, Mistral, etc.). "
-        "Upload a Japanese PDF and receive a translated English PDF."
+        "Multi-format document translation using IBM watsonx.ai.\n\n"
+        "**Supported formats:** PDF, DOCX, XLSX, PPTX, HTML, Markdown, plain text\n\n"
+        "**Language pairs:** Any ↔ Any (Japanese, English, Portuguese, Spanish, French, German, …)"
     ),
-    version="1.0.0",
-    contact={"name": "watsonx Translator Agent"},
-    license_info={"name": "Apache 2.0"},
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 
-def _patch_schema(obj):
-    if isinstance(obj, dict):
-        # anyOf [{type: X}, {type: null}] → type: X + nullable: true
-        if "anyOf" in obj:
-            non_null = [s for s in obj["anyOf"] if s != {"type": "null"}]
-            if len(non_null) < len(obj["anyOf"]):
-                obj.pop("anyOf")
-                obj.update(non_null[0] if len(non_null) == 1 else {"anyOf": non_null})
-                obj["nullable"] = True
-        # const → enum (3.0.3 doesn't support const)
-        if "const" in obj:
-            obj["enum"] = [obj.pop("const")]
-        # contentMediaType → format: binary (file uploads)
-        if "contentMediaType" in obj:
-            obj.pop("contentMediaType")
-            obj["format"] = "binary"
-        for v in list(obj.values()):
-            _patch_schema(v)
-    elif isinstance(obj, list):
-        for item in obj:
-            _patch_schema(item)
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    logger.exception("Unhandled error: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        contact=app.contact,
-        license_info=app.license_info,
-        routes=app.routes,
-    )
-    schema["openapi"] = "3.0.3"
-    _patch_schema(schema)
-    schema["servers"] = [{"url": os.getenv("APP_URL", "http://localhost:8000")}]
-    app.openapi_schema = schema
-    return schema
+# ── Info endpoints ───────────────────────────────────────────────────
 
-
-app.openapi = custom_openapi
-
-
-# ── Endpoints ───────────────────────────────────────────────────────
-
-
-@app.get("/health", response_model=HealthResponse, tags=["System"])
+@app.get("/api/v1/health", response_model=HealthResponse, tags=["Info"])
 async def health_check():
-    """Check API health and configuration status."""
+    available = [ext for ext in SUPPORTED_EXTENSIONS]
     return HealthResponse(
         status="ok",
         watsonx_url=DEFAULT_WATSONX_URL,
         project_configured=bool(WATSONX_PROJECT_ID),
+        docling_available=DOCLING_AVAILABLE,
+        formats_available=sorted(available),
     )
 
 
-@app.get("/api/v1/models", response_model=ModelsResponse, tags=["Models"])
+@app.get("/api/v1/models", response_model=ModelsResponse, tags=["Info"])
 async def list_models():
-    """List all supported watsonx.ai models for translation."""
     models = []
     for m in ModelID:
         parts = m.value.split("/")
         family = parts[0] if len(parts) > 1 else "unknown"
-        name = parts[1] if len(parts) > 1 else m.value
+        name   = parts[1] if len(parts) > 1 else m.value
         models.append(ModelInfo(id=m.value, name=name, family=family))
     return ModelsResponse(models=models)
 
 
-@app.get("/api/v1/regions", tags=["Configuration"])
-async def list_regions():
-    """List available IBM Cloud regions for watsonx.ai."""
-    return {
-        "regions": [{"id": r.name.lower(), "url": r.value} for r in RegionURL]
+@app.get("/api/v1/formats", response_model=FormatsResponse, tags=["Info"])
+async def list_formats():
+    lib_map = {
+        ".pdf":  "docling (OCR-capable) or pypdf",
+        ".docx": "python-docx",
+        ".xlsx": "openpyxl",
+        ".xls":  "openpyxl",
+        ".pptx": "python-pptx",
+        ".ppt":  "python-pptx (converted to pptx)",
+        ".html": "docling",
+        ".htm":  "docling",
+        ".md":   "docling",
+        ".txt":  "docling",
     }
+    available = []
+    for ext, mime in MIME_TYPES.items():
+        available.append(FormatInfo(extension=ext, mime_type=mime, requires=lib_map.get(ext, "docling")))
+    return FormatsResponse(formats=available)
 
+
+@app.get("/api/v1/regions", tags=["Info"])
+async def list_regions():
+    return {"regions": [{"id": r.name.lower(), "url": r.value} for r in RegionURL]}
+
+
+# ── Unified translation endpoint ─────────────────────────────────────
+
+@app.post(
+    "/api/v1/translate/document",
+    response_model=TranslateResponse,
+    tags=["Translation"],
+    summary="Translate any document (PDF, Word, Excel, PowerPoint, …)",
+    description=(
+        "Upload a document in any supported format. The agent extracts text, translates it "
+        "using the selected watsonx.ai model, and returns the translated file in the **same format** "
+        "as the input (DOCX→DOCX, XLSX→XLSX, PPTX→PPTX, PDF→PDF).\n\n"
+        "Set `source_lang='auto'` for automatic language detection.\n\n"
+        "**Examples:** Japanese→English, English→Japanese, Portuguese→Spanish, French→German, …"
+    ),
+)
+async def translate_document(
+    request: Request,
+    file: UploadFile = File(..., description="Document to translate"),
+    source_lang: str = Query(default="auto", description="Source language (e.g. 'Japanese', 'Portuguese'). Use 'auto' to detect automatically."),
+    target_lang: str = Query(default="English", description="Target language (e.g. 'English', 'Spanish', 'French', 'Japanese')"),
+    model_id: str = Query(default=ModelID.GRANITE_3_8B_INSTRUCT.value, description="watsonx.ai model ID"),
+    region: Optional[str] = Query(default=None, description="watsonx.ai region URL"),
+    project_id: Optional[str] = Query(default=None, description="watsonx project ID"),
+):
+    filename = file.filename or "document"
+    ext = Path(filename).suffix.lower()
+
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+        )
+
+    watsonx_url  = region or DEFAULT_WATSONX_URL
+    wx_project_id = project_id or WATSONX_PROJECT_ID
+    if not wx_project_id:
+        raise HTTPException(status_code=400, detail="Project ID required. Set WATSONX_PROJECT_ID env var or pass as query param.")
+
+    file_bytes = await file.read()
+    logger.info("Received document: %s (%d bytes) | %s → %s", filename, len(file_bytes), source_lang, target_lang)
+
+    token = token_manager.get_token()
+    fn = _translate_fn(model_id, token, watsonx_url, wx_project_id, source_lang, target_lang)
+
+    page_details: list[TranslationPageDetail] = []
+    output_ext = ext
+
+    # ── Format dispatch ──────────────────────────────────────────────
+
+    if ext == ".docx":
+        output_bytes = translate_docx(file_bytes, fn)
+
+    elif ext in (".xlsx", ".xls"):
+        output_bytes = translate_xlsx(file_bytes, fn)
+        output_ext = ".xlsx"
+
+    elif ext in (".pptx", ".ppt"):
+        output_bytes = translate_pptx(file_bytes, fn)
+        output_ext = ".pptx"
+
+    else:
+        # PDF and text-based formats: extract → translate pages → rebuild as PDF
+        pages = extract_pages(file_bytes, filename)
+        if not pages:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No extractable text found in this document. "
+                    "For scanned PDFs, ensure OCR has been applied first "
+                    "(e.g. with 'ocrmypdf'). "
+                    "For image-only PDFs, docling OCR must be enabled."
+                ),
+            )
+
+        translated_pages: list[str] = []
+        for i, page_text in enumerate(pages):
+            logger.info("Translating page %d/%d...", i + 1, len(pages))
+            translated = translate_page(page_text, model_id, token, watsonx_url, wx_project_id, source_lang, target_lang)
+            translated_pages.append(translated)
+            page_details.append(TranslationPageDetail(
+                page=i + 1,
+                source_chars=len(page_text),
+                translated_chars=len(translated),
+            ))
+
+        # Rebuild as PDF regardless of input format (HTML, MD, TXT → PDF)
+        output_ext = ".pdf"
+        tmp_pdf = os.path.join(tempfile.gettempdir(), _output_filename(filename, ".pdf"))
+        build_translated_pdf(translated_pages, tmp_pdf, source_lang, target_lang)
+        with open(tmp_pdf, "rb") as f:
+            output_bytes = f.read()
+
+    download_url = save_and_finalize(output_bytes, filename, output_ext, str(request.base_url))
+    logger.info("Done: %d bytes → %s", len(output_bytes), download_url)
+
+    return TranslateResponse(
+        message=f"Translation complete ({source_lang} → {target_lang})",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        pages_translated=len(page_details) or 1,
+        model_used=model_id,
+        region=watsonx_url,
+        download_url=download_url,
+        pages=page_details,
+    )
+
+
+# ── Legacy PDF endpoints (backward compatible, now language-aware) ────
 
 @app.post(
     "/api/v1/translate/pdf",
     response_model=TranslateResponse,
     tags=["Translation"],
-    summary="Translate a Japanese PDF to English",
+    summary="Translate a PDF document",
     description=(
-        "Upload a Japanese PDF. The agent extracts text per page, translates each "
-        "page using the selected watsonx.ai model, and returns a downloadable English PDF."
+        "Upload a PDF. Extracts text (using docling with pypdf fallback), translates each page, "
+        "and returns a downloadable translated PDF.\n\n"
+        "Now supports any language pair — not just Japanese→English."
     ),
 )
 async def translate_pdf(
     request: Request,
-    file: UploadFile = File(..., description="Japanese PDF file to translate"),
-    model_id: str = Query(
-        default=ModelID.GRANITE_3_8B_INSTRUCT.value,
-        description="watsonx.ai model ID (see /api/v1/models for options)",
-    ),
-    region: str = Query(
-        default=None,
-        description="watsonx.ai region URL (defaults to WATSONX_URL env var)",
-    ),
-    project_id: str = Query(
-        default=None,
-        description="watsonx project ID (defaults to WATSONX_PROJECT_ID env var)",
-    ),
+    file: UploadFile = File(..., description="PDF file to translate"),
+    source_lang: str = Query(default="Japanese", description="Source language"),
+    target_lang: str = Query(default="English", description="Target language"),
+    model_id: str = Query(default=ModelID.GRANITE_3_8B_INSTRUCT.value),
+    region: Optional[str] = Query(default=None),
+    project_id: Optional[str] = Query(default=None),
 ):
-    # Validate file
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+    filename = file.filename or "document.pdf"
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted by this endpoint. Use /api/v1/translate/document for other formats.")
 
-    watsonx_url = region or DEFAULT_WATSONX_URL
+    watsonx_url   = region or DEFAULT_WATSONX_URL
     wx_project_id = project_id or WATSONX_PROJECT_ID
     if not wx_project_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Project ID required. Set WATSONX_PROJECT_ID env var or pass as query param.",
-        )
+        raise HTTPException(status_code=400, detail="Project ID required.")
 
-    # 1. Read PDF
-    logger.info(f"Received PDF: {file.filename}")
     file_bytes = await file.read()
+    logger.info("PDF upload: %s (%d bytes) | %s → %s", filename, len(file_bytes), source_lang, target_lang)
 
-    # 2. Extract text
-    pages = extract_text_from_pdf(file_bytes)
+    pages = extract_pages(file_bytes, filename)
     if not pages:
         raise HTTPException(
             status_code=422,
-            detail="No extractable text found in the PDF. Ensure it contains selectable text (not scanned images).",
+            detail="No extractable text found in the PDF. The file may be a scanned image. Use ocrmypdf to add a text layer first.",
         )
-    logger.info(f"Extracted {len(pages)} pages with text.")
+    logger.info("Extracted %d pages.", len(pages))
 
-    # 3. Get IAM token
     token = token_manager.get_token()
-
-    # 4. Translate each page
-    translated_pages = []
-    page_details = []
+    translated_pages: list[str] = []
+    page_details: list[TranslationPageDetail] = []
 
     for i, page_text in enumerate(pages):
-        logger.info(f"Translating page {i + 1}/{len(pages)}...")
-        translated = translate_page(page_text, model_id, token, watsonx_url, wx_project_id)
+        logger.info("Translating page %d/%d...", i + 1, len(pages))
+        translated = translate_page(page_text, model_id, token, watsonx_url, wx_project_id, source_lang, target_lang)
         translated_pages.append(translated)
-        page_details.append(
-            TranslationPageDetail(
-                page=i + 1,
-                source_chars=len(page_text),
-                translated_chars=len(translated),
-            )
-        )
+        page_details.append(TranslationPageDetail(page=i + 1, source_chars=len(page_text), translated_chars=len(translated)))
 
-    # 5. Generate English PDF (upload to COS if configured, else serve locally)
-    download_url = finalize_translated_pdf(translated_pages, file.filename or "document", str(request.base_url))
-    logger.info(f"Translation complete: {len(translated_pages)} pages → {download_url}")
+    tmp_pdf = os.path.join(tempfile.gettempdir(), _output_filename(filename, ".pdf"))
+    build_translated_pdf(translated_pages, tmp_pdf, source_lang, target_lang)
+    with open(tmp_pdf, "rb") as f:
+        pdf_bytes = f.read()
+
+    download_url = save_and_finalize(pdf_bytes, filename, ".pdf", str(request.base_url))
+    logger.info("Translation complete: %d pages → %s", len(translated_pages), download_url)
 
     return TranslateResponse(
-        message="Translation complete",
+        message=f"Translation complete ({source_lang} → {target_lang})",
+        source_lang=source_lang,
+        target_lang=target_lang,
         pages_translated=len(translated_pages),
         model_used=model_id,
         region=watsonx_url,
@@ -814,68 +1013,69 @@ async def translate_pdf(
     "/api/v1/translate/pdf-base64",
     response_model=TranslateResponse,
     tags=["Translation"],
-    summary="Translate a Japanese PDF supplied as base64 (JSON body)",
-    description=(
-        "Send a base64-encoded Japanese PDF in a JSON body. "
-        "Intended for AI orchestration tools (e.g. watsonx Orchestrate) that cannot "
-        "perform multipart file uploads. The agent decodes the PDF, translates each "
-        "page, and returns a downloadable English PDF."
-    ),
+    summary="Translate a PDF supplied as base64 (JSON body)",
+    description="Send a base64-encoded PDF in a JSON body. Intended for AI orchestration tools that cannot perform multipart uploads.",
 )
 async def translate_pdf_base64(request: Request, body: TranslatePdfBase64Request):
     import base64
 
-    model_id = body.model_id or ModelID.GRANITE_3_8B_INSTRUCT.value
-    watsonx_url = body.region or DEFAULT_WATSONX_URL
+    model_id      = body.model_id or ModelID.GRANITE_3_8B_INSTRUCT.value
+    watsonx_url   = body.region or DEFAULT_WATSONX_URL
     wx_project_id = body.project_id or WATSONX_PROJECT_ID
+    source_lang   = body.source_lang or "Japanese"
+    target_lang   = body.target_lang or "English"
 
     if not wx_project_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Project ID required. Set WATSONX_PROJECT_ID env var or pass as 'project_id'.",
-        )
+        raise HTTPException(status_code=400, detail="Project ID required.")
 
-    # Decode base64 → bytes
     try:
         file_bytes = base64.b64decode(body.file)
     except Exception:
-        raise HTTPException(status_code=400, detail="'file' is not valid base64-encoded content.")
-
-    if not file_bytes.startswith(b"%PDF"):
-        raise HTTPException(status_code=400, detail="Decoded content is not a valid PDF.")
+        raise HTTPException(status_code=400, detail="'file' is not valid base64 content.")
 
     filename = body.filename or "document.pdf"
-    logger.info(f"Received base64 PDF: {filename} ({len(file_bytes)} bytes)")
+    ext = Path(filename).suffix.lower()
 
-    pages = extract_text_from_pdf(file_bytes)
-    if not pages:
-        raise HTTPException(
-            status_code=422,
-            detail="No extractable text found in the PDF. Ensure it contains selectable text (not scanned images).",
-        )
+    logger.info("Base64 upload: %s (%d bytes) | %s → %s", filename, len(file_bytes), source_lang, target_lang)
 
     token = token_manager.get_token()
-    translated_pages = []
-    page_details = []
+    fn = _translate_fn(model_id, token, watsonx_url, wx_project_id, source_lang, target_lang)
 
-    for i, page_text in enumerate(pages):
-        logger.info(f"Translating page {i + 1}/{len(pages)}...")
-        translated = translate_page(page_text, model_id, token, watsonx_url, wx_project_id)
-        translated_pages.append(translated)
-        page_details.append(
-            TranslationPageDetail(
-                page=i + 1,
-                source_chars=len(page_text),
-                translated_chars=len(translated),
-            )
-        )
+    page_details: list[TranslationPageDetail] = []
+    output_ext = ext if ext in SUPPORTED_EXTENSIONS else ".pdf"
 
-    download_url = finalize_translated_pdf(translated_pages, filename, str(request.base_url))
-    logger.info(f"Translation complete: {len(translated_pages)} pages → {download_url}")
+    if ext == ".docx":
+        output_bytes = translate_docx(file_bytes, fn)
+    elif ext in (".xlsx", ".xls"):
+        output_bytes = translate_xlsx(file_bytes, fn)
+        output_ext = ".xlsx"
+    elif ext in (".pptx", ".ppt"):
+        output_bytes = translate_pptx(file_bytes, fn)
+        output_ext = ".pptx"
+    else:
+        pages = extract_pages(file_bytes, filename)
+        if not pages:
+            raise HTTPException(status_code=422, detail="No extractable text found.")
+
+        translated_pages: list[str] = []
+        for i, page_text in enumerate(pages):
+            translated = translate_page(page_text, model_id, token, watsonx_url, wx_project_id, source_lang, target_lang)
+            translated_pages.append(translated)
+            page_details.append(TranslationPageDetail(page=i + 1, source_chars=len(page_text), translated_chars=len(translated)))
+
+        output_ext = ".pdf"
+        tmp_pdf = os.path.join(tempfile.gettempdir(), _output_filename(filename, ".pdf"))
+        build_translated_pdf(translated_pages, tmp_pdf, source_lang, target_lang)
+        with open(tmp_pdf, "rb") as f:
+            output_bytes = f.read()
+
+    download_url = save_and_finalize(output_bytes, filename, output_ext, str(request.base_url))
 
     return TranslateResponse(
-        message="Translation complete",
-        pages_translated=len(translated_pages),
+        message=f"Translation complete ({source_lang} → {target_lang})",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        pages_translated=len(page_details) or 1,
         model_used=model_id,
         region=watsonx_url,
         download_url=download_url,
@@ -887,68 +1087,63 @@ async def translate_pdf_base64(request: Request, body: TranslatePdfBase64Request
     "/api/v1/translate/from-source",
     response_model=TranslateResponse,
     tags=["Translation"],
-    summary="Translate a Japanese PDF referenced by file path or bucket",
-    description=(
-        "Provide a PDF source — either a server-side file path or an S3-compatible "
-        "bucket object (IBM COS, AWS S3, MinIO, …). The agent fetches the PDF, "
-        "translates it, and returns a downloadable English PDF."
-    ),
+    summary="Translate a document from a file path, URL, or bucket",
+    description="Fetch a document from a server path, HTTP URL, or S3-compatible bucket and translate it.",
 )
 async def translate_from_source(request: Request, body: TranslateFromSourceRequest):
-    model_id = body.model_id or ModelID.GRANITE_3_8B_INSTRUCT.value
-    watsonx_url = body.region or DEFAULT_WATSONX_URL
+    model_id      = body.model_id or ModelID.GRANITE_3_8B_INSTRUCT.value
+    watsonx_url   = body.region or DEFAULT_WATSONX_URL
     wx_project_id = body.project_id or WATSONX_PROJECT_ID
+    source_lang   = body.source_lang or "Japanese"
+    target_lang   = body.target_lang or "English"
 
     if not wx_project_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Project ID required. Set WATSONX_PROJECT_ID env var or pass as 'project_id'.",
-        )
+        raise HTTPException(status_code=400, detail="Project ID required.")
 
-    # 1. Fetch PDF bytes from the requested source
-    file_bytes = load_pdf_bytes_from_source(body.source)
+    file_bytes, filename = load_bytes_from_source(body.source)
+    ext = Path(filename).suffix.lower()
 
-    # 2. Extract text
-    pages = extract_text_from_pdf(file_bytes)
-    if not pages:
-        raise HTTPException(
-            status_code=422,
-            detail="No extractable text found in the PDF. Ensure it contains selectable text.",
-        )
-    logger.info(f"Extracted {len(pages)} pages from source {body.source.type}.")
+    logger.info("From-source: %s (%d bytes) | %s → %s", filename, len(file_bytes), source_lang, target_lang)
 
-    # 3. Get IAM token
     token = token_manager.get_token()
+    fn = _translate_fn(model_id, token, watsonx_url, wx_project_id, source_lang, target_lang)
 
-    # 4. Translate each page
-    translated_pages = []
-    page_details = []
+    page_details: list[TranslationPageDetail] = []
+    output_ext = ext if ext in SUPPORTED_EXTENSIONS else ".pdf"
 
-    for i, page_text in enumerate(pages):
-        logger.info(f"Translating page {i + 1}/{len(pages)}...")
-        translated = translate_page(page_text, model_id, token, watsonx_url, wx_project_id)
-        translated_pages.append(translated)
-        page_details.append(
-            TranslationPageDetail(
-                page=i + 1,
-                source_chars=len(page_text),
-                translated_chars=len(translated),
-            )
-        )
+    if ext == ".docx":
+        output_bytes = translate_docx(file_bytes, fn)
+    elif ext in (".xlsx", ".xls"):
+        output_bytes = translate_xlsx(file_bytes, fn)
+        output_ext = ".xlsx"
+    elif ext in (".pptx", ".ppt"):
+        output_bytes = translate_pptx(file_bytes, fn)
+        output_ext = ".pptx"
+    else:
+        pages = extract_pages(file_bytes, filename)
+        if not pages:
+            raise HTTPException(status_code=422, detail="No extractable text found.")
 
-    # 5. Generate English PDF — derive filename from source
-    if body.source.type == "url":
-        source_name = body.source.url.split("?")[0].rstrip("/").split("/")[-1] or "document"
-    elif body.source.type == "file_path":
-        source_name = os.path.basename(body.source.path)
-    else:  # bucket
-        source_name = body.source.key.split("/")[-1]
-    download_url = finalize_translated_pdf(translated_pages, source_name, str(request.base_url))
-    logger.info(f"Translation complete: {len(translated_pages)} pages → {download_url}")
+        translated_pages: list[str] = []
+        for i, page_text in enumerate(pages):
+            logger.info("Translating page %d/%d...", i + 1, len(pages))
+            translated = translate_page(page_text, model_id, token, watsonx_url, wx_project_id, source_lang, target_lang)
+            translated_pages.append(translated)
+            page_details.append(TranslationPageDetail(page=i + 1, source_chars=len(page_text), translated_chars=len(translated)))
+
+        output_ext = ".pdf"
+        tmp_pdf = os.path.join(tempfile.gettempdir(), _output_filename(filename, ".pdf"))
+        build_translated_pdf(translated_pages, tmp_pdf, source_lang, target_lang)
+        with open(tmp_pdf, "rb") as f:
+            output_bytes = f.read()
+
+    download_url = save_and_finalize(output_bytes, filename, output_ext, str(request.base_url))
 
     return TranslateResponse(
-        message="Translation complete",
-        pages_translated=len(translated_pages),
+        message=f"Translation complete ({source_lang} → {target_lang})",
+        source_lang=source_lang,
+        target_lang=target_lang,
+        pages_translated=len(page_details) or 1,
         model_used=model_id,
         region=watsonx_url,
         download_url=download_url,
@@ -960,28 +1155,34 @@ async def translate_from_source(request: Request, body: TranslateFromSourceReque
     "/api/v1/translate/text",
     response_model=TranslateTextResponse,
     tags=["Translation"],
-    summary="Translate Japanese text to English (direct)",
-    description="Send raw Japanese text and receive the English translation. Useful for testing or non-PDF workflows.",
+    summary="Translate raw text (any language pair)",
+    description="Send raw text and receive the translation. Supports any source/target language.",
 )
 async def translate_text_endpoint(request: Request, body: TranslateTextRequest):
-    model_id = body.model_id or ModelID.GRANITE_3_8B_INSTRUCT.value
-    watsonx_url = body.region or DEFAULT_WATSONX_URL
+    model_id      = body.model_id or ModelID.GRANITE_3_8B_INSTRUCT.value
+    watsonx_url   = body.region or DEFAULT_WATSONX_URL
     wx_project_id = WATSONX_PROJECT_ID
+    source_lang   = body.source_lang or "auto"
+    target_lang   = body.target_lang or "English"
 
     if not wx_project_id:
         raise HTTPException(status_code=400, detail="WATSONX_PROJECT_ID env var not set.")
-
     if not body.text or not body.text.strip():
-        raise HTTPException(status_code=400, detail="'text' field is empty. Pass the full Japanese text extracted from the document.")
+        raise HTTPException(status_code=400, detail="'text' field is empty.")
 
     token = token_manager.get_token()
-    translated = translate_page(body.text, model_id, token, watsonx_url, wx_project_id)
+    translated = translate_page(body.text, model_id, token, watsonx_url, wx_project_id, source_lang, target_lang)
 
-    # Always generate a PDF so the agent can return a stable download link
-    download_url = finalize_translated_pdf([translated], body.filename or "document", str(request.base_url))
+    tmp_pdf = os.path.join(tempfile.gettempdir(), _output_filename(body.filename or "document", ".pdf"))
+    build_translated_pdf([translated], tmp_pdf, source_lang, target_lang)
+    with open(tmp_pdf, "rb") as f:
+        pdf_bytes = f.read()
+    download_url = save_and_finalize(pdf_bytes, body.filename or "document", ".pdf", str(request.base_url))
 
     return TranslateTextResponse(
         translated_text=translated,
+        source_lang=source_lang,
+        target_lang=target_lang,
         model_used=model_id,
         source_chars=len(body.text),
         translated_chars=len(translated),
@@ -989,35 +1190,37 @@ async def translate_text_endpoint(request: Request, body: TranslateTextRequest):
     )
 
 
+# ── Download endpoint ────────────────────────────────────────────────
+
 @app.get(
     "/api/v1/download/{filename}",
     tags=["Download"],
-    summary="Download a translated PDF",
+    summary="Download a translated document",
     responses={
-        200: {"content": {"application/pdf": {}}, "description": "Translated English PDF"},
+        200: {"description": "Translated document (PDF, DOCX, XLSX, PPTX, …)"},
         404: {"description": "File not found"},
     },
 )
-async def download_translated_pdf(filename: str):
-    """Download a previously translated PDF by filename."""
-    # Sanitize filename to prevent path traversal
-    safe_name = re.sub(r"[^a-zA-Z0-9._-]", "", filename)
+async def download_translated_file(filename: str):
+    safe_name = re.sub(r"[^a-zA-Z0-9._\-]", "", filename)
     path = os.path.join(tempfile.gettempdir(), safe_name)
 
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found or expired.")
 
+    ext = Path(safe_name).suffix.lower()
+    media_type = MIME_TYPES.get(ext, "application/octet-stream")
+
     return FileResponse(
         path,
-        media_type="application/pdf",
-        filename="translated_en.pdf",
-        headers={"Content-Disposition": "attachment; filename=translated_en.pdf"},
+        media_type=media_type,
+        filename=safe_name,
+        headers={"Content-Disposition": f"attachment; filename={safe_name}"},
     )
 
 
-# ── Entry Point ─────────────────────────────────────────────────────
+# ── Entry Point ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
