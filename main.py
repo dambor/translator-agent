@@ -23,7 +23,7 @@ import re
 import tempfile
 import logging
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Literal, Optional, Union
@@ -729,8 +729,8 @@ def upload_to_cos(local_path: str, object_key: str, mime_type: str = "applicatio
 def _output_filename(original_name: str, output_ext: Optional[str] = None) -> str:
     stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", Path(original_name).stem) if original_name else "document"
     ext = output_ext or Path(original_name).suffix.lower() or ".pdf"
-    today = date.today().strftime("%Y%m%d")
-    return f"{stem}_translated_{today}{ext}"
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{stem}_translated_{now}{ext}"
 
 
 def save_and_finalize(
