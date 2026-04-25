@@ -35,12 +35,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from fpdf import FPDF
 
 load_dotenv()
 
@@ -135,31 +130,32 @@ TESSERACT_LANG = {
 }
 
 
-# ── CJK font registration ────────────────────────────────────────────
+# ── CJK font path detection ──────────────────────────────────────────
+# fpdf2 embeds the font directly into the PDF — no registration needed.
 
-_CJK_FONT_NAME: Optional[str] = None
+_CJK_FONT_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",   # Debian/Ubuntu (fonts-noto-cjk)
+    "/usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf",
+    "/System/Library/Fonts/PingFang.ttc",                        # macOS
+    "C:/Windows/Fonts/msyh.ttc",                                 # Windows (Microsoft YaHei)
+]
 
-def _get_cjk_font() -> Optional[str]:
-    """Find and register a CJK-capable font for ReportLab. Cached after first call."""
-    global _CJK_FONT_NAME
-    if _CJK_FONT_NAME:
-        return _CJK_FONT_NAME
+_cjk_font_path: Optional[str] = None
 
+def _find_cjk_font() -> Optional[str]:
+    global _cjk_font_path
+    if _cjk_font_path:
+        return _cjk_font_path
     import glob
-    candidates = glob.glob("/usr/share/fonts/**/*CJK*Regular*.ttc", recursive=True) + \
-                 glob.glob("/usr/share/fonts/**/*CJK*Regular*.otf", recursive=True) + \
-                 glob.glob("/usr/local/share/fonts/*CJK*.ttc", recursive=True)
-
-    for path in candidates:
-        try:
-            pdfmetrics.registerFont(TTFont("NotoSansCJK", path, subfontIndex=0))
-            _CJK_FONT_NAME = "NotoSansCJK"
-            logger.info("Registered CJK font: %s", path)
-            return _CJK_FONT_NAME
-        except Exception as exc:
-            logger.warning("Could not register %s: %s", path, exc)
-
-    logger.warning("No CJK font found — Japanese/Chinese/Korean PDF output may show boxes")
+    paths = _CJK_FONT_CANDIDATES + \
+            glob.glob("/usr/share/fonts/**/*CJK*.ttc", recursive=True) + \
+            glob.glob("/usr/share/fonts/**/*CJK*.otf", recursive=True)
+    for p in paths:
+        if os.path.exists(p):
+            _cjk_font_path = p
+            logger.info("CJK font found: %s", p)
+            return p
+    logger.warning("No CJK font found — install fonts-noto-cjk for Japanese/Chinese/Korean PDF output")
     return None
 
 
@@ -644,72 +640,58 @@ def translate_xlsx(file_bytes: bytes, fn: Callable[[str], str]) -> bytes:
 
 # ── PDF generation (ReportLab) ───────────────────────────────────────
 
-def _safe_para(text: str) -> str:
-    cleaned = "".join(
-        c for c in text
-        if c in ("\n", "\t", " ") or not unicodedata.category(c).startswith("C")
-    )
-    return cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
 def build_translated_pdf(
     pages: list[str],
     output_path: str,
     source_lang: str = "auto",
     target_lang: str = "English",
 ) -> None:
-    doc = SimpleDocTemplate(
-        output_path, pagesize=A4,
-        topMargin=0.75 * inch, bottomMargin=0.75 * inch,
-        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
-    )
-    styles = getSampleStyleSheet()
-
-    # Use a CJK-capable font when the target language requires it
+    """Build a translated PDF using fpdf2 with proper Unicode/CJK font embedding."""
     needs_cjk = target_lang.strip().lower() in CJK_LANGUAGES
-    body_font = _get_cjk_font() if needs_cjk else None
-    font_kwargs = {"fontName": body_font} if body_font else {}
+    cjk_path  = _find_cjk_font() if needs_cjk else None
 
-    title_style = ParagraphStyle(
-        "DocTitle", parent=styles["Title"],
-        fontSize=18, leading=22, spaceAfter=20, textColor="#1a1a2e",
-        **font_kwargs,
-    )
-    page_header_style = ParagraphStyle(
-        "PageHeader", parent=styles["Heading2"],
-        fontSize=13, leading=18, spaceAfter=8, spaceBefore=12, textColor="#0f3460",
-        **font_kwargs,
-    )
-    body_style = ParagraphStyle(
-        "TranslatedBody", parent=styles["BodyText"],
-        fontSize=11, leading=16, spaceAfter=8,
-        **font_kwargs,
-    )
-    meta_style = ParagraphStyle(
-        "MetaInfo", parent=styles["Italic"],
-        fontSize=9, leading=12, textColor="#666666", spaceAfter=16,
-        **font_kwargs,
-    )
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_margins(20, 20, 20)
 
-    src = source_lang if source_lang.lower() != "auto" else "detected"
-    story = [
-        Paragraph("Translated Document", title_style),
-        Paragraph(f"Source: {src} &rarr; {target_lang} &nbsp;|&nbsp; Pages: {len(pages)}", meta_style),
-        Spacer(1, 0.2 * inch),
-    ]
+    if cjk_path:
+        pdf.add_font("body", fname=cjk_path)
+        body_font = "body"
+    else:
+        body_font = "Helvetica"
+        if needs_cjk:
+            logger.warning("CJK font unavailable — output may show boxes for %s", target_lang)
+
+    src = source_lang if source_lang.lower() != "auto" else "auto-detected"
 
     for i, page_text in enumerate(pages):
-        if i > 0:
-            story.append(PageBreak())
-        story.append(Paragraph(f"Page {i + 1}", page_header_style))
-        for para in page_text.split("\n\n"):
-            cleaned = para.strip()
-            if cleaned:
-                story.append(Paragraph(_safe_para(cleaned), body_style))
-        story.append(Spacer(1, 0.15 * inch))
+        pdf.add_page()
 
-    doc.build(story)
-    logger.info("PDF built: %s (font=%s)", output_path, body_font or "default")
+        # Page header
+        pdf.set_font("Helvetica", size=9)
+        pdf.set_text_color(120, 120, 120)
+        pdf.cell(
+            0, 8,
+            f"Translated Document  |  {src} -> {target_lang}  |  Page {i + 1} of {len(pages)}",
+            new_x="LMARGIN", new_y="NEXT",
+        )
+        pdf.ln(4)
+        pdf.set_draw_color(200, 200, 200)
+        pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+        pdf.ln(6)
+
+        # Body text
+        pdf.set_font(body_font, size=11)
+        pdf.set_text_color(0, 0, 0)
+        # Strip control characters but keep all Unicode (CJK, Arabic, etc.)
+        clean = "".join(
+            c for c in page_text
+            if c in ("\n", "\t", " ") or not unicodedata.category(c).startswith("C")
+        )
+        pdf.multi_cell(0, 7, clean)
+
+    pdf.output(output_path)
+    logger.info("PDF built: %s (font=%s)", output_path, body_font)
 
 
 # ── COS / local file management ──────────────────────────────────────

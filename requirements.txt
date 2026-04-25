@@ -8,7 +8,7 @@ boto3>=1.35.0
 
 # PDF extraction and generation
 pypdf>=4.3.0
-reportlab>=4.2.0
+fpdf2>=2.7.0
 
 # OCR fallback for scanned PDFs
 pdf2image>=1.17.0
