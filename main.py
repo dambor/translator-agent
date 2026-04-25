@@ -134,7 +134,13 @@ TESSERACT_LANG = {
 # fpdf2 embeds the font directly into the PDF — no registration needed.
 
 _CJK_FONT_CANDIDATES = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",   # Debian/Ubuntu (fonts-noto-cjk)
+    # TTF subfonts extracted from TTC at build time (preferred — fpdf2 renders glyphs correctly from TTF)
+    "/usr/local/share/fonts/noto-cjk/NotoSansCJKjp-Regular.ttf",
+    "/usr/local/share/fonts/noto-cjk/NotoSansCJKsc-Regular.ttf",
+    "/usr/local/share/fonts/noto-cjk/NotoSansCJKkr-Regular.ttf",
+    "/usr/local/share/fonts/noto-cjk/NotoSansCJKtc-Regular.ttf",
+    # Fallbacks (TTC/OTF — glyphs may render invisible in fpdf2)
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf",
     "/System/Library/Fonts/PingFang.ttc",                        # macOS
     "C:/Windows/Fonts/msyh.ttc",                                 # Windows (Microsoft YaHei)
@@ -148,7 +154,7 @@ def _find_cjk_font() -> Optional[str]:
         return _cjk_font_path
     import glob
     paths = _CJK_FONT_CANDIDATES + \
-            glob.glob("/usr/share/fonts/**/*CJK*.ttc", recursive=True) + \
+            glob.glob("/usr/local/share/fonts/noto-cjk/*.ttf") + \
             glob.glob("/usr/share/fonts/**/*CJK*.otf", recursive=True)
     for p in paths:
         if os.path.exists(p):

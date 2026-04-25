@@ -2,10 +2,10 @@ FROM python:3.11-slim
 
 # System libraries:
 #   tesseract-ocr      — OCR engine for scanned PDFs
-#   tesseract-ocr-*    — language packs (add more as needed)
-#   poppler-utils      — pdf2image needs pdftoppm from poppler
-#   libgomp1           — required by pytesseract/onnxruntime
-#   libglib2.0-0 libgl1 — image processing libs
+#   tesseract-ocr-*    — language packs
+#   poppler-utils      — pdf2image needs pdftoppm
+#   fonts-noto-cjk     — CJK font source (TTC collection)
+#   libgomp1 libglib2.0-0 libgl1 — image processing libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-jpn \
@@ -28,6 +28,29 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --timeout=300 -r requirements.txt
+
+# Extract individual TTF subfonts from the NotoSansCJK TTC collection.
+# fpdf2 renders glyph outlines correctly from TTF/OTF but not from TTC —
+# using TTC causes CJK characters to be invisible in the output PDF.
+RUN python3 - <<'EOF'
+import os, sys
+try:
+    from fontTools.ttLib import TTCollection
+    src = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    out_dir = "/usr/local/share/fonts/noto-cjk"
+    os.makedirs(out_dir, exist_ok=True)
+    if not os.path.exists(src):
+        print(f"WARNING: {src} not found", file=sys.stderr)
+        sys.exit(0)
+    coll = TTCollection(src)
+    for i, name in enumerate(["NotoSansCJKjp", "NotoSansCJKkr", "NotoSansCJKsc", "NotoSansCJKtc"]):
+        if i < len(coll):
+            out = f"{out_dir}/{name}-Regular.ttf"
+            coll[i].save(out)
+            print(f"Extracted: {out}")
+except Exception as e:
+    print(f"Font extraction failed: {e}", file=sys.stderr)
+EOF
 
 COPY main.py .
 COPY .env* ./
