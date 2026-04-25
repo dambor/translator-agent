@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-kor \
     tesseract-ocr-chi-sim \
     poppler-utils \
+    fonts-noto-cjk \
     libgomp1 \
     libglib2.0-0 \
     libgl1 \
