@@ -801,6 +801,25 @@ app = FastAPI(
 )
 
 
+def _custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        openapi_version="3.0.3",
+        description=app.description,
+        routes=app.routes,
+    )
+    app_url = os.getenv("APP_URL", "").rstrip("/")
+    if app_url:
+        schema["servers"] = [{"url": app_url}]
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+app.openapi = _custom_openapi
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     if isinstance(exc, HTTPException):
