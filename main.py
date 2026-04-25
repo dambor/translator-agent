@@ -1111,7 +1111,15 @@ async def _translate_base64_impl(request: Request, body: TranslateDocumentBase64
         raise HTTPException(status_code=400, detail="Project ID required.")
 
     try:
-        file_bytes = base64.b64decode(body.file)
+        raw = body.file
+        # Strip data-URL prefix: "data:<mime>;base64,<data>"
+        if "," in raw and raw.startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        # Remove whitespace and line breaks that some platforms inject
+        raw = raw.strip().replace("\n", "").replace("\r", "").replace(" ", "")
+        # Fix padding
+        raw += "=" * (-len(raw) % 4)
+        file_bytes = base64.b64decode(raw)
     except Exception:
         raise HTTPException(status_code=400, detail="'file' is not valid base64 content.")
 
