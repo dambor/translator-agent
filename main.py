@@ -253,6 +253,8 @@ class HealthResponse(BaseModel):
     watsonx_url: str
     project_configured: bool
     formats_available: list[str]
+    cjk_font_path: Optional[str]     # None = CJK PDF output will be blank
+    pdf_engine: str                   # "fpdf2" or "reportlab"
 
 
 # ── Upload-source schemas (backward compat) ──────────────────────────
@@ -800,12 +802,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.get("/api/v1/health", response_model=HealthResponse, tags=["Info"])
 async def health_check():
-    available = [ext for ext in SUPPORTED_EXTENSIONS]
     return HealthResponse(
         status="ok",
         watsonx_url=DEFAULT_WATSONX_URL,
         project_configured=bool(WATSONX_PROJECT_ID),
-        formats_available=sorted(available),
+        formats_available=sorted(SUPPORTED_EXTENSIONS),
+        cjk_font_path=_find_cjk_font(),
+        pdf_engine="fpdf2",
     )
 
 
