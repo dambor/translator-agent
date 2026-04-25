@@ -1112,6 +1112,7 @@ async def _translate_base64_impl(request: Request, body: TranslateDocumentBase64
 
     try:
         raw = body.file
+        logger.info("Base64 input: len=%d prefix=%r", len(raw), raw[:80])
         # Strip data-URL prefix: "data:<mime>;base64,<data>"
         if "," in raw and raw.startswith("data:"):
             raw = raw.split(",", 1)[1]
@@ -1120,6 +1121,7 @@ async def _translate_base64_impl(request: Request, body: TranslateDocumentBase64
         # Fix padding
         raw += "=" * (-len(raw) % 4)
         file_bytes = base64.b64decode(raw)
+        logger.info("Base64 decoded: %d bytes, magic=%r", len(file_bytes), file_bytes[:8])
     except Exception:
         raise HTTPException(status_code=400, detail="'file' is not valid base64 content.")
 
