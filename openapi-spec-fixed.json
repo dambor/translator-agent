@@ -1,0 +1,1083 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "watsonx AI Translator",
+    "description": "Multi-format document translation using IBM watsonx.ai.\n\n**Supported formats:** PDF, DOCX, XLSX, PPTX, HTML, Markdown, plain text\n\n**Language pairs:** Any to Any (Japanese, English, Portuguese, Spanish, French, German, ...)",
+    "version": "2.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://watsonx-translator.2907fwm9n6us.us-south.codeengine.appdomain.cloud"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Info",
+      "description": "Service metadata: health, models, formats, regions"
+    },
+    {
+      "name": "Translation",
+      "description": "Document and text translation endpoints"
+    },
+    {
+      "name": "Download",
+      "description": "Retrieve translated artifacts"
+    }
+  ],
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "Info"
+        ],
+        "summary": "Health Check",
+        "operationId": "health_check",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/models": {
+      "get": {
+        "tags": [
+          "Info"
+        ],
+        "summary": "List Models",
+        "operationId": "list_models",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/formats": {
+      "get": {
+        "tags": [
+          "Info"
+        ],
+        "summary": "List Formats",
+        "operationId": "list_formats",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/regions": {
+      "get": {
+        "tags": [
+          "Info"
+        ],
+        "summary": "List Regions",
+        "operationId": "list_regions",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegionsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/translate/document": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "Translate any document (PDF, Word, Excel, PowerPoint, ...)",
+        "description": "Upload a document in any supported format. The agent extracts text, translates it using the selected watsonx.ai model, and returns the translated file in the **same format** as the input (DOCX to DOCX, XLSX to XLSX, PPTX to PPTX, PDF to PDF).\n\nSet `source_lang='auto'` for automatic language detection.\n\n**Examples:** Japanese to English, English to Japanese, Portuguese to Spanish, French to German, ...",
+        "operationId": "translate_document",
+        "parameters": [
+          {
+            "name": "source_lang",
+            "in": "query",
+            "required": false,
+            "description": "Source language (e.g. 'Japanese', 'Portuguese'). Use 'auto' to detect automatically.",
+            "schema": {
+              "type": "string",
+              "default": "auto"
+            }
+          },
+          {
+            "name": "target_lang",
+            "in": "query",
+            "required": false,
+            "description": "Target language (e.g. 'English', 'Spanish', 'French', 'Japanese')",
+            "schema": {
+              "type": "string",
+              "default": "English"
+            }
+          },
+          {
+            "name": "model_id",
+            "in": "query",
+            "required": false,
+            "description": "watsonx.ai model ID",
+            "schema": {
+              "type": "string",
+              "default": "ibm/granite-3-8b-instruct"
+            }
+          },
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "watsonx.ai region URL",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "description": "watsonx project ID",
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_translate_document"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/translate/pdf": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "Translate a PDF document",
+        "description": "Upload a PDF. Extracts text (using docling with pypdf fallback), translates each page, and returns a downloadable translated PDF.\n\nNow supports any language pair, not just Japanese to English.",
+        "operationId": "translate_pdf",
+        "parameters": [
+          {
+            "name": "source_lang",
+            "in": "query",
+            "required": false,
+            "description": "Source language",
+            "schema": {
+              "type": "string",
+              "default": "Japanese"
+            }
+          },
+          {
+            "name": "target_lang",
+            "in": "query",
+            "required": false,
+            "description": "Target language",
+            "schema": {
+              "type": "string",
+              "default": "English"
+            }
+          },
+          {
+            "name": "model_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "ibm/granite-3-8b-instruct"
+            }
+          },
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_translate_pdf"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/translate/document-base64": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "Translate any document, base64 JSON body (for AI orchestration)",
+        "description": "**Designed for AI orchestration platforms such as watsonx Orchestrate.**\n\nThe end user simply attaches a file in the chat. The orchestration platform automatically base64-encodes the attachment and calls this skill, so the user never deals with base64 themselves.\n\nSupported formats: **PDF, DOCX, XLSX, PPTX, HTML, Markdown, TXT**\n\nDOCX to DOCX, XLSX to XLSX, PPTX to PPTX (format preserved). PDF/HTML/MD/TXT to PDF.\n\nSet `source_lang='auto'` for automatic language detection.\n\n**Example payload:**\n```json\n{\n  \"file\": \"<base64-encoded content>\",\n  \"filename\": \"report.docx\",\n  \"source_lang\": \"Portuguese\",\n  \"target_lang\": \"Japanese\"\n}\n```",
+        "operationId": "translate_document_base64",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateDocumentBase64Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/translate/pdf-base64": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "[Deprecated] Use /api/v1/translate/document-base64 instead",
+        "description": "Backward-compatible alias. Use `/api/v1/translate/document-base64` for new integrations.",
+        "operationId": "translate_pdf_base64",
+        "deprecated": true,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateDocumentBase64Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/translate/from-source": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "Translate a document from a file path, URL, or bucket",
+        "description": "Fetch a document from a server path, HTTP URL, or S3-compatible bucket and translate it.",
+        "operationId": "translate_from_source",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateFromSourceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/translate/text": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "Translate raw text (any language pair)",
+        "description": "Send raw text and receive the translation. Supports any source/target language.",
+        "operationId": "translate_text",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateTextRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateTextResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/download/{filename}": {
+      "get": {
+        "tags": [
+          "Download"
+        ],
+        "summary": "Download a translated document",
+        "operationId": "download_translated_file",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Translated document (PDF, DOCX, XLSX, PPTX, ...)",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.presentationml.presentation": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_translate_document": {
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "Document to translate"
+          }
+        }
+      },
+      "Body_translate_pdf": {
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "PDF file to translate"
+          }
+        }
+      },
+      "BucketSource": {
+        "type": "object",
+        "required": [
+          "type",
+          "bucket",
+          "key"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "bucket"
+            ]
+          },
+          "endpoint_url": {
+            "type": "string",
+            "nullable": true
+          },
+          "bucket": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "access_key_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "secret_access_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "region_name": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "FilePathSource": {
+        "type": "object",
+        "required": [
+          "type",
+          "path"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "file_path"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute or relative path to the document on the server filesystem"
+          }
+        }
+      },
+      "URLSource": {
+        "type": "object",
+        "required": [
+          "type",
+          "url"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "url"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "Publicly accessible or pre-signed URL pointing to the document"
+          },
+          "headers": {
+            "type": "object",
+            "nullable": true,
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Optional HTTP headers (e.g. Authorization)"
+          }
+        }
+      },
+      "FormatInfo": {
+        "type": "object",
+        "required": [
+          "extension",
+          "mime_type",
+          "requires"
+        ],
+        "properties": {
+          "extension": {
+            "type": "string"
+          },
+          "mime_type": {
+            "type": "string"
+          },
+          "requires": {
+            "type": "string"
+          }
+        }
+      },
+      "FormatsResponse": {
+        "type": "object",
+        "required": [
+          "formats"
+        ],
+        "properties": {
+          "formats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FormatInfo"
+            }
+          }
+        }
+      },
+      "RegionInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "url"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Region identifier (e.g. 'us-south', 'eu-de')"
+          },
+          "url": {
+            "type": "string",
+            "description": "watsonx.ai region endpoint URL"
+          }
+        }
+      },
+      "RegionsResponse": {
+        "type": "object",
+        "required": [
+          "regions"
+        ],
+        "properties": {
+          "regions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegionInfo"
+            }
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "watsonx_url",
+          "project_configured",
+          "formats_available",
+          "cjk_font_path",
+          "pdf_engine"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "watsonx_url": {
+            "type": "string"
+          },
+          "project_configured": {
+            "type": "boolean"
+          },
+          "formats_available": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cjk_font_path": {
+            "type": "string",
+            "nullable": true
+          },
+          "pdf_engine": {
+            "type": "string"
+          }
+        }
+      },
+      "ModelInfo": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "family"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "family": {
+            "type": "string"
+          }
+        }
+      },
+      "ModelsResponse": {
+        "type": "object",
+        "required": [
+          "models"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelInfo"
+            }
+          }
+        }
+      },
+      "TranslateDocumentBase64Request": {
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "description": "Request body for AI orchestration tools (e.g. watsonx Orchestrate). The orchestration platform base64-encodes the user's file attachment automatically before calling this skill, so the end user just uploads a normal file.",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Base64-encoded content of the document to translate. Supported formats: PDF, DOCX, XLSX, PPTX, HTML, Markdown, TXT. AI orchestration platforms (e.g. watsonx Orchestrate) encode the user's file attachment automatically, so the end user just attaches a normal file.",
+            "format": "byte"
+          },
+          "filename": {
+            "type": "string",
+            "nullable": true,
+            "default": "document.pdf",
+            "description": "Original filename including extension (e.g. 'report.docx', 'invoice.pdf'). Used to detect the file format and name the output file. Always include the correct extension."
+          },
+          "source_lang": {
+            "type": "string",
+            "nullable": true,
+            "default": "auto",
+            "description": "Language of the source document. Examples: 'Japanese', 'Portuguese', 'Spanish', 'French'. Use 'auto' to let the model detect the language automatically."
+          },
+          "target_lang": {
+            "type": "string",
+            "nullable": true,
+            "default": "English",
+            "description": "Language to translate into. Examples: 'English', 'Japanese', 'Spanish', 'French'."
+          },
+          "model_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "watsonx.ai model ID. Defaults to ibm/granite-3-8b-instruct."
+          },
+          "region": {
+            "type": "string",
+            "nullable": true,
+            "description": "watsonx.ai region URL."
+          },
+          "project_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "watsonx project ID."
+          }
+        }
+      },
+      "TranslateFromSourceRequest": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FilePathSource"
+              },
+              {
+                "$ref": "#/components/schemas/URLSource"
+              },
+              {
+                "$ref": "#/components/schemas/BucketSource"
+              }
+            ],
+            "discriminator": {
+              "propertyName": "type",
+              "mapping": {
+                "file_path": "#/components/schemas/FilePathSource",
+                "url": "#/components/schemas/URLSource",
+                "bucket": "#/components/schemas/BucketSource"
+              }
+            }
+          },
+          "source_lang": {
+            "type": "string",
+            "nullable": true,
+            "default": "Japanese",
+            "description": "Source language"
+          },
+          "target_lang": {
+            "type": "string",
+            "nullable": true,
+            "default": "English",
+            "description": "Target language"
+          },
+          "model_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "region": {
+            "type": "string",
+            "nullable": true
+          },
+          "project_id": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "TranslationPageDetail": {
+        "type": "object",
+        "required": [
+          "page",
+          "source_chars",
+          "translated_chars"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer"
+          },
+          "source_chars": {
+            "type": "integer"
+          },
+          "translated_chars": {
+            "type": "integer"
+          }
+        }
+      },
+      "TranslateResponse": {
+        "type": "object",
+        "required": [
+          "message",
+          "source_lang",
+          "target_lang",
+          "pages_translated",
+          "model_used",
+          "region",
+          "download_url",
+          "pages"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "source_lang": {
+            "type": "string"
+          },
+          "target_lang": {
+            "type": "string"
+          },
+          "pages_translated": {
+            "type": "integer"
+          },
+          "model_used": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "download_url": {
+            "type": "string"
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranslationPageDetail"
+            }
+          }
+        }
+      },
+      "TranslateTextRequest": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to translate"
+          },
+          "source_lang": {
+            "type": "string",
+            "nullable": true,
+            "default": "auto",
+            "description": "Source language (e.g. 'Japanese'). Use 'auto' to detect."
+          },
+          "target_lang": {
+            "type": "string",
+            "nullable": true,
+            "default": "English",
+            "description": "Target language (e.g. 'English', 'Spanish')"
+          },
+          "model_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "watsonx model ID"
+          },
+          "region": {
+            "type": "string",
+            "nullable": true,
+            "description": "watsonx region URL"
+          },
+          "filename": {
+            "type": "string",
+            "nullable": true,
+            "description": "Output filename stem"
+          }
+        }
+      },
+      "TranslateTextResponse": {
+        "type": "object",
+        "required": [
+          "translated_text",
+          "source_lang",
+          "target_lang",
+          "model_used",
+          "source_chars",
+          "translated_chars"
+        ],
+        "properties": {
+          "translated_text": {
+            "type": "string"
+          },
+          "source_lang": {
+            "type": "string"
+          },
+          "target_lang": {
+            "type": "string"
+          },
+          "model_used": {
+            "type": "string"
+          },
+          "source_chars": {
+            "type": "integer"
+          },
+          "translated_chars": {
+            "type": "integer"
+          },
+          "download_url": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "properties": {
+          "loc": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            }
+          },
+          "msg": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "input": {
+            "description": "The input value that caused the validation error",
+            "nullable": true
+          },
+          "ctx": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "HTTPValidationError": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            }
+          }
+        }
+      }
+    }
+  }
+}

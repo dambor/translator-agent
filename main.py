@@ -300,6 +300,7 @@ class TranslateDocumentBase64Request(BaseModel):
             "AI orchestration platforms (e.g. watsonx Orchestrate) encode the user's "
             "file attachment automatically — the end user just attaches a normal file."
         ),
+        json_schema_extra={"format": "byte"},
     )
     filename: Optional[str] = Field(
         default="document.pdf",
