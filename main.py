@@ -662,21 +662,26 @@ def build_translated_pdf(
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.set_margins(20, 20, 20)
 
+    _DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     if cjk_path:
         pdf.add_font("body", fname=cjk_path)
+        body_font = "body"
+    elif os.path.exists(_DEJAVU):
+        pdf.add_font("body", fname=_DEJAVU)
         body_font = "body"
     else:
         body_font = "Helvetica"
         if needs_cjk:
             logger.warning("CJK font unavailable — output may show boxes for %s", target_lang)
 
+    _header_font = "body" if body_font == "body" else "Helvetica"
     src = source_lang if source_lang.lower() != "auto" else "auto-detected"
 
     for i, page_text in enumerate(pages):
         pdf.add_page()
 
         # Page header
-        pdf.set_font("Helvetica", size=9)
+        pdf.set_font(_header_font, size=9)
         pdf.set_text_color(120, 120, 120)
         pdf.cell(
             0, 8,
