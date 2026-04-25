@@ -256,7 +256,6 @@ class HealthResponse(BaseModel):
     status: str
     watsonx_url: str
     project_configured: bool
-    docling_available: bool
     formats_available: list[str]
 
 
@@ -283,14 +282,50 @@ class BucketSource(BaseModel):
     region_name: Optional[str] = Field(default=None)
 
 
-class TranslatePdfBase64Request(BaseModel):
-    file: str = Field(..., description="Base64-encoded file content")
-    filename: Optional[str] = Field(default="document.pdf")
-    source_lang: Optional[str] = Field(default="Japanese", description="Source language")
-    target_lang: Optional[str] = Field(default="English", description="Target language")
-    model_id: Optional[str] = Field(default=None)
-    region: Optional[str] = Field(default=None)
-    project_id: Optional[str] = Field(default=None)
+class TranslateDocumentBase64Request(BaseModel):
+    """
+    Request body for AI orchestration tools (e.g. watsonx Orchestrate).
+    The orchestration platform base64-encodes the user's file attachment automatically
+    before calling this skill — the end user just uploads a normal file.
+    """
+    file: str = Field(
+        ...,
+        description=(
+            "Base64-encoded content of the document to translate. "
+            "Supported formats: PDF, DOCX, XLSX, PPTX, HTML, Markdown, TXT. "
+            "AI orchestration platforms (e.g. watsonx Orchestrate) encode the user's "
+            "file attachment automatically — the end user just attaches a normal file."
+        ),
+    )
+    filename: Optional[str] = Field(
+        default="document.pdf",
+        description=(
+            "Original filename including extension (e.g. 'report.docx', 'invoice.pdf'). "
+            "Used to detect the file format and name the output file. "
+            "Always include the correct extension."
+        ),
+    )
+    source_lang: Optional[str] = Field(
+        default="auto",
+        description=(
+            "Language of the source document. Examples: 'Japanese', 'Portuguese', 'Spanish', 'French'. "
+            "Use 'auto' to let the model detect the language automatically."
+        ),
+    )
+    target_lang: Optional[str] = Field(
+        default="English",
+        description="Language to translate into. Examples: 'English', 'Japanese', 'Spanish', 'French'.",
+    )
+    model_id: Optional[str] = Field(
+        default=None,
+        description="watsonx.ai model ID. Defaults to ibm/granite-3-8b-instruct.",
+    )
+    region: Optional[str] = Field(default=None, description="watsonx.ai region URL.")
+    project_id: Optional[str] = Field(default=None, description="watsonx project ID.")
+
+
+# Backward-compat alias used by existing integrations
+TranslatePdfBase64Request = TranslateDocumentBase64Request
 
 
 class TranslateFromSourceRequest(BaseModel):
@@ -788,7 +823,6 @@ async def health_check():
         status="ok",
         watsonx_url=DEFAULT_WATSONX_URL,
         project_configured=bool(WATSONX_PROJECT_ID),
-        docling_available=DOCLING_AVAILABLE,
         formats_available=sorted(available),
     )
 
@@ -1009,13 +1043,46 @@ async def translate_pdf(
 
 
 @app.post(
+    "/api/v1/translate/document-base64",
+    response_model=TranslateResponse,
+    tags=["Translation"],
+    summary="Translate any document — base64 JSON body (for AI orchestration)",
+    description=(
+        "**Designed for AI orchestration platforms such as watsonx Orchestrate.**\n\n"
+        "The end user simply attaches a file in the chat. "
+        "The orchestration platform automatically base64-encodes the attachment and calls this skill "
+        "— the user never deals with base64 themselves.\n\n"
+        "Supported formats: **PDF, DOCX, XLSX, PPTX, HTML, Markdown, TXT**\n\n"
+        "DOCX → DOCX, XLSX → XLSX, PPTX → PPTX (format preserved). PDF/HTML/MD/TXT → PDF.\n\n"
+        "Set `source_lang='auto'` for automatic language detection.\n\n"
+        "**Example payload:**\n"
+        "```json\n"
+        "{\n"
+        '  "file": "<base64-encoded content>",\n'
+        '  "filename": "report.docx",\n'
+        '  "source_lang": "Portuguese",\n'
+        '  "target_lang": "Japanese"\n'
+        "}\n"
+        "```"
+    ),
+)
+async def translate_document_base64(request: Request, body: TranslateDocumentBase64Request):
+    return await _translate_base64_impl(request, body)
+
+
+@app.post(
     "/api/v1/translate/pdf-base64",
     response_model=TranslateResponse,
     tags=["Translation"],
-    summary="Translate a PDF supplied as base64 (JSON body)",
-    description="Send a base64-encoded PDF in a JSON body. Intended for AI orchestration tools that cannot perform multipart uploads.",
+    summary="[Deprecated] Use /api/v1/translate/document-base64 instead",
+    description="Backward-compatible alias. Use `/api/v1/translate/document-base64` for new integrations.",
+    include_in_schema=True,
 )
 async def translate_pdf_base64(request: Request, body: TranslatePdfBase64Request):
+    return await _translate_base64_impl(request, body)
+
+
+async def _translate_base64_impl(request: Request, body: TranslateDocumentBase64Request):
     import base64
 
     model_id      = body.model_id or ModelID.GRANITE_3_8B_INSTRUCT.value
