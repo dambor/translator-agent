@@ -20,7 +20,10 @@ set -a; source "$ENV_FILE"; set +a
 ICR_NAMESPACE="${ICR_NAMESPACE:-ce--8ff6f-2907fwm9n6us}"
 BASE_IMAGE="private.us.icr.io/${ICR_NAMESPACE}/watsonx-translator-base:latest"
 BUILD_NAME="watsonx-translator-base"
-REPO_URL=$(git -C "$SCRIPT_DIR" remote get-url origin)
+# Convert SSH remote to HTTPS so Code Engine can clone without an SSH key
+REPO_URL=$(git -C "$SCRIPT_DIR" remote get-url origin \
+  | sed 's|git@github.com:|https://github.com/|' \
+  | sed 's|\.git$||')
 
 echo "==> Base image : $BASE_IMAGE"
 echo "==> Git source : $REPO_URL"
