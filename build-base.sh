@@ -24,18 +24,19 @@ echo "==> Building base image: $BASE_IMAGE"
 echo "    This takes ~5 minutes (apt + pip + fonts). Run only when deps change."
 echo ""
 
-SUBMIT_OUT=$(ibmcloud ce buildrun submit \
+SUBMIT_LOG=$(mktemp)
+ibmcloud ce buildrun submit \
   --build-source . \
   --dockerfile Dockerfile.base \
   --image "$BASE_IMAGE" \
   --registry-secret ce-auto-icr-private-us-south \
-  --size large 2>&1)
-echo "$SUBMIT_OUT"
+  --size large 2>&1 | tee "$SUBMIT_LOG"
 
 # Extract run name from output like: Submitting build run 'watsonx-translator-base-run-...'
-RUN_NAME=$(echo "$SUBMIT_OUT" | grep -oE "watsonx-translator-base-run-[0-9a-z-]+" | head -1)
+RUN_NAME=$(grep -oE "[a-z0-9-]+-run-[0-9]+-[0-9]+" "$SUBMIT_LOG" | head -1)
+rm -f "$SUBMIT_LOG"
 if [[ -z "$RUN_NAME" ]]; then
-  echo "ERROR: Could not determine build run name from output above."
+  echo "ERROR: Could not determine build run name. Check output above."
   exit 1
 fi
 
