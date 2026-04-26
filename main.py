@@ -134,35 +134,38 @@ TESSERACT_LANG = {
 # ── CJK font path detection ──────────────────────────────────────────
 # fpdf2 embeds the font directly into the PDF — no registration needed.
 
-_CJK_FONT_CANDIDATES = [
-    # TTF subfonts extracted from TTC at build time (preferred — fpdf2 renders glyphs correctly from TTF)
-    "/usr/local/share/fonts/noto-cjk/NotoSansCJKjp-Regular.ttf",
-    "/usr/local/share/fonts/noto-cjk/NotoSansCJKsc-Regular.ttf",
-    "/usr/local/share/fonts/noto-cjk/NotoSansCJKkr-Regular.ttf",
-    "/usr/local/share/fonts/noto-cjk/NotoSansCJKtc-Regular.ttf",
-    # Fallbacks (TTC/OTF — glyphs may render invisible in fpdf2)
+_NOTO_DIR = "/usr/local/share/fonts/noto-cjk"
+_CJK_LANG_FONTS = {
+    "japanese":            f"{_NOTO_DIR}/NotoSansCJKjp-Regular.ttf",
+    "korean":              f"{_NOTO_DIR}/NotoSansCJKkr-Regular.ttf",
+    "chinese":             f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
+    "chinese simplified":  f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
+    "chinese traditional": f"{_NOTO_DIR}/NotoSansCJKtc-Regular.ttf",
+}
+_CJK_FONT_FALLBACKS = [
+    f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
+    f"{_NOTO_DIR}/NotoSansCJKjp-Regular.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf",
-    "/System/Library/Fonts/PingFang.ttc",                        # macOS
-    "C:/Windows/Fonts/msyh.ttc",                                 # Windows (Microsoft YaHei)
+    "/System/Library/Fonts/PingFang.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
 ]
+_cjk_font_cache: dict[str, Optional[str]] = {}
 
-_cjk_font_path: Optional[str] = None
-
-def _find_cjk_font() -> Optional[str]:
-    global _cjk_font_path
-    if _cjk_font_path:
-        return _cjk_font_path
+def _find_cjk_font(target_lang: str = "") -> Optional[str]:
     import glob
-    paths = _CJK_FONT_CANDIDATES + \
-            glob.glob("/usr/local/share/fonts/noto-cjk/*.ttf") + \
-            glob.glob("/usr/share/fonts/**/*CJK*.otf", recursive=True)
-    for p in paths:
-        if os.path.exists(p):
-            _cjk_font_path = p
-            logger.info("CJK font found: %s", p)
+    key = target_lang.strip().lower()
+    if key in _cjk_font_cache:
+        return _cjk_font_cache[key]
+    preferred = _CJK_LANG_FONTS.get(key)
+    candidates = ([preferred] if preferred else []) + _CJK_FONT_FALLBACKS + \
+                 glob.glob(f"{_NOTO_DIR}/*.ttf")
+    for p in candidates:
+        if p and os.path.exists(p):
+            logger.info("CJK font for '%s': %s", target_lang, p)
+            _cjk_font_cache[key] = p
             return p
-    logger.warning("No CJK font found — install fonts-noto-cjk for Japanese/Chinese/Korean PDF output")
+    logger.warning("No CJK font found for '%s'", target_lang)
+    _cjk_font_cache[key] = None
     return None
 
 
@@ -658,7 +661,7 @@ def build_translated_pdf(
 ) -> None:
     """Build a translated PDF using fpdf2 with proper Unicode/CJK font embedding."""
     needs_cjk = target_lang.strip().lower() in CJK_LANGUAGES
-    cjk_path  = _find_cjk_font() if needs_cjk else None
+    cjk_path  = _find_cjk_font(target_lang) if needs_cjk else None
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
@@ -845,7 +848,7 @@ async def health_check():
         watsonx_url=DEFAULT_WATSONX_URL,
         project_configured=bool(WATSONX_PROJECT_ID),
         formats_available=sorted(SUPPORTED_EXTENSIONS),
-        cjk_font_path=_find_cjk_font(),
+        cjk_font_path=_find_cjk_font("japanese"),
         pdf_engine="fpdf2",
     )
 
