@@ -33,6 +33,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.openapi.utils import get_openapi
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from fpdf import FPDF
@@ -819,6 +820,12 @@ def _custom_openapi():
     return app.openapi_schema
 
 app.openapi = _custom_openapi
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    logger.error("422 Validation error on %s %s: %s", request.method, request.url, exc.errors())
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 @app.exception_handler(Exception)
