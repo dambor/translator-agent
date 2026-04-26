@@ -903,13 +903,25 @@ async def list_regions():
 )
 async def translate_document(
     request: Request,
-    file: UploadFile = File(..., description="Document to translate"),
+    file: Optional[UploadFile] = File(default=None, description="Document to translate"),
     source_lang: str = Form(default="auto", description="Source language (e.g. 'Japanese', 'Portuguese'). Use 'auto' to detect automatically."),
     target_lang: str = Form(default="English", description="Target language (e.g. 'English', 'Spanish', 'French', 'Japanese')"),
     model_id: str = Form(default=ModelID.GRANITE_3_8B_INSTRUCT.value, description="watsonx.ai model ID"),
     region: Optional[str] = Form(default=None, description="watsonx.ai region URL"),
     project_id: Optional[str] = Form(default=None, description="watsonx project ID"),
 ):
+    # If FastAPI didn't bind the file, scan all form fields for any uploaded file
+    if file is None:
+        form = await request.form()
+        logger.info("FORM DEBUG: fields=%s", {k: type(v).__name__ for k, v in form.items()})
+        for val in form.values():
+            if hasattr(val, "read"):
+                file = val
+                break
+
+    if file is None:
+        raise HTTPException(status_code=422, detail="No file received. Please attach a document.")
+
     filename = file.filename or "document"
     ext = Path(filename).suffix.lower()
 
