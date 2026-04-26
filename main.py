@@ -910,6 +910,12 @@ async def translate_document(
     region: Optional[str] = Form(default=None, description="watsonx.ai region URL"),
     project_id: Optional[str] = Form(default=None, description="watsonx project ID"),
 ):
+    # Log raw request details to diagnose what Orchestrate sends
+    content_type = request.headers.get("content-type", "")
+    body_preview = await request.body()
+    logger.info("REQUEST DEBUG: content-type=%r body_len=%d body_preview=%r",
+                content_type, len(body_preview), body_preview[:300])
+
     # If FastAPI didn't bind the file, scan all form fields for any uploaded file
     if file is None:
         form = await request.form()
