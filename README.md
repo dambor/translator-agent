@@ -1,199 +1,194 @@
 # watsonx AI Translator Agent
 
-Japanese PDF → English PDF translation using IBM watsonx.ai foundation models.
+Multi-format document translation using IBM watsonx.ai. Supports any language pair and preserves the original file format (DOCX→DOCX, XLSX→XLSX, PPTX→PPTX, PDF→PDF).
 
-## Quick Start
+**Supported formats:** PDF, Word (DOCX), Excel (XLSX), PowerPoint (PPTX), HTML, Markdown, plain text  
+**Language pairs:** Any ↔ Any (Japanese, English, Portuguese, Spanish, French, German, Chinese, Korean, …)
 
-**Prerequisites:** `ibmcloud` CLI, `jq`, Python 3.13+
+---
+
+## Quick Start (Local)
+
+**Prerequisites:** `ibmcloud` CLI, `jq`, Python 3.11+
 
 ```bash
-# 1. Install dependencies and fetch all credentials → writes .env
+# 1. Install dependencies and fetch credentials → writes .env
 ./setup-env.sh
 
-# 2. Run locally
+# 2. Install Python packages
+pip install -r requirements.txt
+
+# 3. Run locally
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-# 3. Open Swagger docs
+# 4. Open Swagger docs
 open http://localhost:8000/docs
 ```
 
+---
+
 ## Deploy to IBM Code Engine
 
+### First deploy
+
 ```bash
-# Deploys (or updates) the app and automatically sets APP_URL
 ./deploy.sh
 ```
 
-`deploy.sh` reads credentials from `.env` (written by `setup-env.sh`), creates or updates
-the Code Engine app, and sets `APP_URL` so the OpenAPI spec reflects the real server URL.
+This logs you into IBM Cloud, selects a Code Engine project, builds the container image, deploys the app, and saves `APP_URL` to `.env`.
 
-After deploy, the OpenAPI spec is ready to import:
+### Subsequent deploys (code changes only)
+
+To avoid rebuilding the full image on every deploy, split the build into a heavy **base image** (built once) and a lightweight **app image** (rebuilt in ~30s):
 
 ```bash
-# Download the spec (OpenAPI 3.0.3)
-curl -s https://<your-app-url>/openapi.json | jq '.' > openapi-spec.json
+# Step 1 — build the base image ONCE (or when requirements.txt changes, ~5 min)
+./build-base.sh
+
+# Step 2 — fast redeploy for code-only changes (~30s)
+./deploy.sh redeploy
 ```
 
-> Override the app name or project without editing the script:
-> ```bash
-> APP_NAME=my-app CE_PROJECT=my-project ./deploy.sh
-> ```
+`build-base.sh` builds all system libraries, Python packages, and fonts into a base image in IBM Container Registry. `deploy.sh redeploy` only rebuilds the thin layer that copies `main.py`.
 
-## Import into watsonx Assistant
+### Regenerate the OpenAPI spec
 
-1. Go to **Integrations → Extensions → Build custom extension**
-2. Upload `openapi-spec.json`
-3. Follow the prompts to authenticate and enable the extension
+```bash
+./deploy.sh openapi
+```
 
-## Environment Variables
+Fetches the live spec from the deployed app and saves it as `openapi-spec.json`.
 
-| Variable                | Required | Description                                        |
-|-------------------------|----------|----------------------------------------------------|
-| `IBM_CLOUD_API_KEY`     | Yes      | IBM Cloud API key used to obtain an IAM token      |
-| `WATSONX_PROJECT_ID`    | Yes      | watsonx.ai project ID                              |
-| `APP_URL`               | Yes      | Deployed app URL — set automatically by `deploy.sh` |
-| `WATSONX_URL`           | No       | Region endpoint (default: `https://us-south.ml.cloud.ibm.com`) |
-| `WATSONX_API_VERSION`   | No       | API version string (default: `2024-05-01`)         |
-| `CHUNK_SIZE`            | No       | Max chars per translation chunk (default: `3000`)  |
-| `OUTPUT_COS_ENDPOINT`   | No       | COS endpoint for translated PDF output             |
-| `OUTPUT_COS_BUCKET`     | No       | Bucket name for translated PDF output              |
-| `OUTPUT_COS_ACCESS_KEY` | No       | HMAC access key for the output bucket              |
-| `OUTPUT_COS_SECRET_KEY` | No       | HMAC secret key for the output bucket              |
+---
+
+## watsonx Orchestrate Integration
+
+Use `openapi-spec-fixed.json` to import the skill into Orchestrate (not `openapi-spec.json`).
+
+### Import the skill
+
+1. In Orchestrate, go to **Skills → Add skill → From file**
+2. Upload `openapi-spec-fixed.json`
+3. Enable the skill
+
+### Agent prompt
+
+```
+You are a document translation assistant powered by IBM watsonx.ai.
+
+When the user asks to translate a document:
+- Call the Translate Document skill immediately when a file is attached
+- Set source_lang to the language the user mentioned, or "auto" if not specified
+- Set target_lang to the language the user wants, default to "English" if not specified
+
+After the skill responds, tell the user:
+- The translation is complete
+- The output filename
+- The download link from the download_url field in the response
+
+If no file is attached, ask the user to attach the document they want to translate.
+
+Supported formats: PDF, Word (DOCX), Excel (XLSX), PowerPoint (PPTX), HTML, Markdown, plain text.
+```
+
+### Skill input mapping
+
+- `file` — the user's file attachment (Orchestrate passes it automatically as binary)
+- `source_lang` — source language, or `auto` to detect automatically
+- `target_lang` — target language (default: `English`)
+
+---
 
 ## API Endpoints
 
-| Method | Path                             | Description                                          |
-|--------|----------------------------------|------------------------------------------------------|
-| POST   | `/api/v1/translate/pdf`          | Upload a Japanese PDF directly (multipart)           |
-| POST   | `/api/v1/translate/from-source`  | Translate from a URL, server file path, or bucket    |
-| POST   | `/api/v1/translate/text`         | Translate raw Japanese text                          |
-| GET    | `/api/v1/download/{filename}`    | Download a translated PDF                            |
-| GET    | `/api/v1/models`                 | List supported models                                |
-| GET    | `/api/v1/regions`                | List available regions                               |
-| GET    | `/health`                        | Health check                                         |
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/translate/document` | Translate any document (multipart form) |
+| POST | `/api/v1/translate/document-base64` | Translate via base64 JSON body |
+| POST | `/api/v1/translate/text` | Translate raw text |
+| POST | `/api/v1/translate/from-source` | Translate from URL, file path, or COS bucket |
+| GET | `/api/v1/download/{filename}` | Download a translated file |
+| GET | `/api/v1/health` | Health check |
+| GET | `/api/v1/models` | List supported models |
+| GET | `/api/v1/formats` | List supported file formats |
+| GET | `/api/v1/regions` | List available regions |
+
+---
 
 ## cURL Examples
 
-### Translate a PDF (default model: Granite 3 8B)
+### Translate a document (any format)
 ```bash
-curl -X POST "http://localhost:8000/api/v1/translate/pdf" \
-  -F "file=@document_ja.pdf" \
-  | jq .
+BASE=http://localhost:8000
 
-# With model selection:
-curl -X POST "http://localhost:8000/api/v1/translate/pdf?model_id=meta-llama/llama-3-1-70b-instruct" \
-  -F "file=@document_ja.pdf" \
-  | jq .
+curl -X POST "$BASE/api/v1/translate/document?source_lang=Japanese&target_lang=English" \
+  -F "file=@report.pdf" | jq .
 
-# With region override:
-curl -X POST "http://localhost:8000/api/v1/translate/pdf?model_id=mistralai/mistral-large&region=https://eu-de.ml.cloud.ibm.com" \
-  -F "file=@document_ja.pdf" \
-  | jq .
+# Portuguese to Spanish
+curl -X POST "$BASE/api/v1/translate/document?source_lang=Portuguese&target_lang=Spanish" \
+  -F "file=@document.docx" | jq .
+
+# Auto-detect source language
+curl -X POST "$BASE/api/v1/translate/document?target_lang=English" \
+  -F "file=@unknown.pdf" | jq .
 ```
 
-### Translate from a URL (watsonx Assistant file upload)
+### Translate raw text
 ```bash
-curl -X POST "http://localhost:8000/api/v1/translate/from-source" \
+curl -X POST "$BASE/api/v1/translate/text" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "人工知能は急速に進化しています。", "source_lang": "Japanese", "target_lang": "English"}'
+```
+
+### Translate from a URL
+```bash
+curl -X POST "$BASE/api/v1/translate/from-source" \
   -H "Content-Type: application/json" \
   -d '{
-    "source": {
-      "type": "url",
-      "url": "https://example.com/documents/japanese.pdf"
-    },
-    "model_id": "ibm/granite-3-8b-instruct"
+    "source": {"type": "url", "url": "https://example.com/document.pdf"},
+    "source_lang": "Japanese",
+    "target_lang": "English"
   }' | jq .
-```
-
-> **Tip:** When using watsonx Assistant, the Assistant provides a temporary download URL when a
-> user uploads a file in chat. Pass that URL as `source.url`. Use the optional `headers` field
-> to include auth headers if the URL requires authentication.
-
-### Translate from a server file path
-```bash
-curl -X POST "http://localhost:8000/api/v1/translate/from-source" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source": {
-      "type": "file_path",
-      "path": "/data/documents/japanese.pdf"
-    },
-    "model_id": "ibm/granite-3-8b-instruct"
-  }' | jq .
-```
-
-### Translate from an IBM COS bucket
-```bash
-curl -X POST "http://localhost:8000/api/v1/translate/from-source" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source": {
-      "type": "bucket",
-      "endpoint_url": "https://s3.us-south.cloud-object-storage.appdomain.cloud",
-      "bucket": "my-bucket",
-      "key": "documents/japanese.pdf",
-      "access_key_id": "YOUR_HMAC_ACCESS_KEY",
-      "secret_access_key": "YOUR_HMAC_SECRET_KEY"
-    },
-    "model_id": "ibm/granite-3-8b-instruct",
-    "project_id": "optional-project-id-override"
-  }' | jq .
-```
-
-> **Tip:** `access_key_id` and `secret_access_key` are optional when `OUTPUT_COS_ACCESS_KEY` /
-> `OUTPUT_COS_SECRET_KEY` env vars are set.
-
-### Download the translated PDF
-```bash
-curl -O "http://localhost:8000/api/v1/download/translated_xxxxx.pdf"
-```
-
-### Translate raw text (no PDF)
-```bash
-curl -X POST "http://localhost:8000/api/v1/translate/text" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "人工知能は急速に進化しています。",
-    "model_id": "ibm/granite-3-8b-instruct"
-  }'
 ```
 
 ### List available models
 ```bash
-curl http://localhost:8000/api/v1/models | jq .
+curl "$BASE/api/v1/models" | jq .
 ```
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `IBM_CLOUD_API_KEY` | Yes | IBM Cloud API key for IAM token generation |
+| `WATSONX_PROJECT_ID` | Yes | watsonx.ai project ID |
+| `APP_URL` | Yes | Deployed app URL — set automatically by `deploy.sh` |
+| `WATSONX_URL` | No | Region endpoint (default: `https://us-south.ml.cloud.ibm.com`) |
+| `OUTPUT_COS_ENDPOINT` | No | COS endpoint for translated file storage |
+| `OUTPUT_COS_BUCKET` | No | COS bucket name |
+| `OUTPUT_COS_ACCESS_KEY` | No | COS HMAC access key |
+| `OUTPUT_COS_SECRET_KEY` | No | COS HMAC secret key |
+| `ICR_NAMESPACE` | No | IBM Container Registry namespace for base image (default: `ce--8ff6f-2907fwm9n6us`) |
+
+---
 
 ## Supported Models
 
-| Provider | Model                              | Best For                        |
-|----------|------------------------------------|---------------------------------|
-| IBM      | granite-3-8b-instruct              | General translation (default)   |
-| IBM      | granite-20b-multilingual           | Multilingual-optimized          |
-| Meta     | llama-3-1-70b-instruct             | Highest quality, slower         |
-| Meta     | llama-3-1-8b-instruct              | Fast, good quality              |
-| Mistral  | mistral-large                      | Strong multilingual             |
-| Mistral  | mixtral-8x7b-instruct-v01          | MoE, good balance              |
-| ELYZA    | elyza-japanese-llama-2-7b-instruct | Japanese-specialized            |
+| Provider | Model ID | Notes |
+|----------|----------|-------|
+| IBM | `ibm/granite-3-8b-instruct` | Default, fast |
+| IBM | `ibm/granite-20b-multilingual` | Multilingual-optimized |
+| Meta | `meta-llama/llama-3-1-70b-instruct` | Highest quality |
+| Meta | `meta-llama/llama-3-1-8b-instruct` | Fast, good quality |
+| Mistral | `mistralai/mistral-large` | Strong multilingual |
+| Mistral | `mistralai/mixtral-8x7b-instruct-v01` | Balanced |
 
-## Docker Deployment
+---
 
-```bash
-docker build -t watsonx-translator .
-docker run -p 8000:8000 \
-  -e IBM_CLOUD_API_KEY="your-key" \
-  -e WATSONX_PROJECT_ID="your-project-id" \
-  watsonx-translator
-```
+## Output Files
 
-## Output Bucket (IBM COS)
+Translated files are named `{original-name}_translated_{YYYYMMDD_HHMMSS}.{ext}` — for example, `report_translated_20260426_143022.pdf`.
 
-When running on Code Engine, translated PDFs are saved to IBM COS so `download_url` returns
-a stable, persistent link. `setup-env.sh` creates the HMAC credentials and `deploy.sh` sets
-all required env vars automatically.
-
-To make translated PDFs publicly accessible, enable public access on the bucket:
-IBM Cloud → Object Storage → your bucket → Access policies → Public access → Enable.
-
-When configured, `download_url` in the response will point directly to the COS object:
-```
-https://s3.us-south.cloud-object-storage.appdomain.cloud/your-bucket/translated/translated_XXXX.pdf
-```
+When COS is configured, `download_url` in the response points to a persistent COS object. Without COS, files are served from the app's temp directory via `/api/v1/download/{filename}`.
