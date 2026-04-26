@@ -130,7 +130,18 @@
           "pages": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/TranslationPageDetail"
+              "type": "object",
+              "properties": {
+                "page": {
+                  "type": "integer"
+                },
+                "source_chars": {
+                  "type": "integer"
+                },
+                "translated_chars": {
+                  "type": "integer"
+                }
+              }
             }
           }
         }
@@ -163,8 +174,9 @@
             "type": "string"
           },
           "input": {
-            "description": "The input value that caused the validation error",
-            "nullable": true
+            "type": "string",
+            "nullable": true,
+            "description": "The input value that caused the validation error"
           },
           "ctx": {
             "type": "object",
