@@ -136,13 +136,15 @@ TESSERACT_LANG = {
 
 _NOTO_DIR = "/usr/local/share/fonts/noto-cjk"
 _CJK_LANG_FONTS = {
-    "japanese":            f"{_NOTO_DIR}/NotoSansCJKjp-Regular.ttf",
-    "korean":              f"{_NOTO_DIR}/NotoSansCJKkr-Regular.ttf",
-    "chinese":             f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
-    "chinese simplified":  f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
-    "chinese traditional": f"{_NOTO_DIR}/NotoSansCJKtc-Regular.ttf",
+    "japanese":            f"{_NOTO_DIR}/NotoSansCJKjp-Regular.otf",
+    "korean":              f"{_NOTO_DIR}/NotoSansCJKkr-Regular.otf",
+    "chinese":             f"{_NOTO_DIR}/NotoSansCJKsc-Regular.otf",
+    "chinese simplified":  f"{_NOTO_DIR}/NotoSansCJKsc-Regular.otf",
+    "chinese traditional": f"{_NOTO_DIR}/NotoSansCJKtc-Regular.otf",
 }
 _CJK_FONT_FALLBACKS = [
+    f"{_NOTO_DIR}/NotoSansCJKsc-Regular.otf",
+    f"{_NOTO_DIR}/NotoSansCJKjp-Regular.otf",
     f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
     f"{_NOTO_DIR}/NotoSansCJKjp-Regular.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",

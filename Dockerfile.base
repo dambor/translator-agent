@@ -39,7 +39,9 @@ try:
     coll = TTCollection(src)
     for i, name in enumerate(["NotoSansCJKjp", "NotoSansCJKkr", "NotoSansCJKsc", "NotoSansCJKtc"]):
         if i < len(coll):
-            out = f"{out_dir}/{name}-Regular.ttf"
+            # Save as .otf — NotoSansCJK uses CFF outlines, not TrueType.
+            # fpdf2 correctly handles CFF when the file has an .otf extension.
+            out = f"{out_dir}/{name}-Regular.otf"
             coll[i].save(out)
             print(f"Extracted: {out}")
 except Exception as e:
