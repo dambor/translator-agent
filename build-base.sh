@@ -19,35 +19,39 @@ set -a; source "$ENV_FILE"; set +a
 
 ICR_NAMESPACE="${ICR_NAMESPACE:-ce--8ff6f-2907fwm9n6us}"
 BASE_IMAGE="private.us.icr.io/${ICR_NAMESPACE}/watsonx-translator-base:latest"
+BUILD_NAME="watsonx-translator-base"
+REPO_URL=$(git -C "$SCRIPT_DIR" remote get-url origin)
 
-echo "==> Building base image: $BASE_IMAGE"
+echo "==> Base image : $BASE_IMAGE"
+echo "==> Git source : $REPO_URL"
 echo "    This takes ~5 minutes (apt + pip + fonts). Run only when deps change."
 echo ""
 
-SUBMIT_LOG=$(mktemp)
-ibmcloud ce buildrun submit \
-  --build-source . \
-  --dockerfile Dockerfile.base \
-  --image "$BASE_IMAGE" \
-  --registry-secret ce-auto-icr-private-us-south \
-  --size large 2>&1 | tee "$SUBMIT_LOG"
-
-# Extract run name from output like: Submitting build run 'watsonx-translator-base-run-...'
-RUN_NAME=$(grep -oE "[a-z0-9-]+-run-[0-9]+-[0-9]+" "$SUBMIT_LOG" | head -1)
-rm -f "$SUBMIT_LOG"
-if [[ -z "$RUN_NAME" ]]; then
-  echo "ERROR: Could not determine build run name. Check output above."
-  exit 1
+# Create or update the build config (uses git repo as source)
+if ibmcloud ce build get --name "$BUILD_NAME" &>/dev/null; then
+  echo "==> Updating build config '$BUILD_NAME'..."
+  ibmcloud ce build update \
+    --name "$BUILD_NAME" \
+    --source "$REPO_URL" \
+    --dockerfile Dockerfile.base \
+    --image "$BASE_IMAGE" \
+    --registry-secret ce-auto-icr-private-us-south \
+    --size large
+else
+  echo "==> Creating build config '$BUILD_NAME'..."
+  ibmcloud ce build create \
+    --name "$BUILD_NAME" \
+    --source "$REPO_URL" \
+    --dockerfile Dockerfile.base \
+    --image "$BASE_IMAGE" \
+    --registry-secret ce-auto-icr-private-us-south \
+    --strategy dockerfile \
+    --size large
 fi
 
-echo "==> Build run submitted: $RUN_NAME"
 echo ""
-echo "==> Following logs (Ctrl+C stops following — build continues in background)..."
-ibmcloud ce buildrun logs -f -n "$RUN_NAME" || true
-
-echo ""
-echo "==> Build status:"
-ibmcloud ce buildrun get -n "$RUN_NAME" | grep -E "Status|Reason|Age"
+echo "==> Submitting build run..."
+ibmcloud ce buildrun submit --build "$BUILD_NAME" --wait
 
 echo ""
 echo "Done. Base image ready: $BASE_IMAGE"
