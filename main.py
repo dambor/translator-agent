@@ -36,7 +36,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
-from fpdf import FPDF
+from fpdf import FPDF, drawing as fpdf_drawing
 
 load_dotenv()
 
@@ -702,7 +702,10 @@ def build_translated_pdf(
 
         # Body text
         pdf.set_font(body_font, size=11)
-        pdf.set_text_color(0, 0, 0)
+        # Use DeviceRGB to force fpdf2 to emit an explicit "0 0 0 rg" color command.
+        # set_text_color(0,0,0) produces DeviceGray(0) which equals the default fill_color,
+        # so fpdf2 silently skips the command — leaving CJK text to inherit a stale color.
+        pdf.set_text_color(r=fpdf_drawing.DeviceRGB(0, 0, 0))
         # Strip control characters but keep all Unicode (CJK, Arabic, etc.)
         clean = "".join(
             c for c in page_text
