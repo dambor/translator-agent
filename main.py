@@ -135,18 +135,21 @@ TESSERACT_LANG = {
 # fpdf2 embeds the font directly into the PDF — no registration needed.
 
 _NOTO_DIR = "/usr/local/share/fonts/noto-cjk"
+# Prefer .ttf (TrueType outlines, converted from CFF at image build time).
+# fpdf2's TrueType subsetting works correctly; its CFF subsetting corrupts
+# complex CJK glyph charstrings, producing invisible glyphs.
 _CJK_LANG_FONTS = {
-    "japanese":            f"{_NOTO_DIR}/NotoSansCJKjp-Regular.otf",
-    "korean":              f"{_NOTO_DIR}/NotoSansCJKkr-Regular.otf",
-    "chinese":             f"{_NOTO_DIR}/NotoSansCJKsc-Regular.otf",
-    "chinese simplified":  f"{_NOTO_DIR}/NotoSansCJKsc-Regular.otf",
-    "chinese traditional": f"{_NOTO_DIR}/NotoSansCJKtc-Regular.otf",
+    "japanese":            f"{_NOTO_DIR}/NotoSansCJKjp-Regular.ttf",
+    "korean":              f"{_NOTO_DIR}/NotoSansCJKkr-Regular.ttf",
+    "chinese":             f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
+    "chinese simplified":  f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
+    "chinese traditional": f"{_NOTO_DIR}/NotoSansCJKtc-Regular.ttf",
 }
 _CJK_FONT_FALLBACKS = [
-    f"{_NOTO_DIR}/NotoSansCJKsc-Regular.otf",
-    f"{_NOTO_DIR}/NotoSansCJKjp-Regular.otf",
     f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
     f"{_NOTO_DIR}/NotoSansCJKjp-Regular.ttf",
+    f"{_NOTO_DIR}/NotoSansCJKsc-Regular.otf",
+    f"{_NOTO_DIR}/NotoSansCJKjp-Regular.otf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/System/Library/Fonts/PingFang.ttc",
     "C:/Windows/Fonts/msyh.ttc",

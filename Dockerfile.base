@@ -24,10 +24,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --timeout=300 -r requirements.txt
 
-# Extract individual TTF subfonts from the NotoSansCJK TTC collection.
-# fpdf2 renders glyph outlines correctly from TTF/OTF but not from TTC.
+# Extract CJK subfonts from the NotoSansCJK TTC and convert CFF→TrueType.
+# fpdf2's CFF subsetting corrupts complex CJK glyph outlines (leaving them
+# invisible), while its TrueType subsetting works correctly.  Converting to
+# actual TrueType outlines (cu2qu) fixes the invisible-glyph problem.
 RUN python3 - <<'EOF'
-import os, sys
+import os, sys, subprocess
 try:
     from fontTools.ttLib import TTCollection
     src = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
@@ -38,12 +40,21 @@ try:
         sys.exit(0)
     coll = TTCollection(src)
     for i, name in enumerate(["NotoSansCJKjp", "NotoSansCJKkr", "NotoSansCJKsc", "NotoSansCJKtc"]):
-        if i < len(coll):
-            # Save as .otf — NotoSansCJK uses CFF outlines, not TrueType.
-            # fpdf2 correctly handles CFF when the file has an .otf extension.
-            out = f"{out_dir}/{name}-Regular.otf"
-            coll[i].save(out)
-            print(f"Extracted: {out}")
+        if i >= len(coll):
+            break
+        otf_path = f"{out_dir}/{name}-Regular.otf"
+        ttf_path = f"{out_dir}/{name}-Regular.ttf"
+        coll[i].save(otf_path)
+        # Convert CFF outlines → TrueType outlines so fpdf2 embeds correctly
+        result = subprocess.run(
+            ["python3", "-m", "fonttools", "otf2ttf", otf_path, "-o", ttf_path],
+            capture_output=True, text=True, timeout=300,
+        )
+        if result.returncode == 0 and os.path.exists(ttf_path):
+            os.unlink(otf_path)
+            print(f"Extracted+converted to TTF: {ttf_path}")
+        else:
+            print(f"WARNING: otf2ttf failed for {name}, keeping OTF: {result.stderr.strip()}", file=sys.stderr)
 except Exception as e:
     print(f"Font extraction failed: {e}", file=sys.stderr)
 EOF
