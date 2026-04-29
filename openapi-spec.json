@@ -1,25 +1,18 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "watsonx AI Translator Agent",
-    "description": "Translate Japanese PDFs to English using IBM watsonx.ai foundation models. Supports model selection at request time (Granite, Llama, Mistral, etc.). Upload a Japanese PDF and receive a translated English PDF.",
-    "contact": {
-      "name": "watsonx Translator Agent"
-    },
-    "license": {
-      "name": "Apache 2.0"
-    },
-    "version": "1.0.0"
+    "title": "watsonx AI Translator",
+    "description": "Multi-format document translation using IBM watsonx.ai.\n\n**Supported formats:** PDF, DOCX, XLSX, PPTX, HTML, Markdown, plain text\n\n**Language pairs:** Any ↔ Any (Japanese, English, Portuguese, Spanish, French, German, …)",
+    "version": "2.0.0"
   },
   "paths": {
-    "/health": {
+    "/api/v1/health": {
       "get": {
         "tags": [
-          "System"
+          "Info"
         ],
         "summary": "Health Check",
-        "description": "Check API health and configuration status.",
-        "operationId": "health_check_health_get",
+        "operationId": "health_check_api_v1_health_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -37,10 +30,9 @@
     "/api/v1/models": {
       "get": {
         "tags": [
-          "Models"
+          "Info"
         ],
         "summary": "List Models",
-        "description": "List all supported watsonx.ai models for translation.",
         "operationId": "list_models_api_v1_models_get",
         "responses": {
           "200": {
@@ -56,13 +48,33 @@
         }
       }
     },
+    "/api/v1/formats": {
+      "get": {
+        "tags": [
+          "Info"
+        ],
+        "summary": "List Formats",
+        "operationId": "list_formats_api_v1_formats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/regions": {
       "get": {
         "tags": [
-          "Configuration"
+          "Info"
         ],
         "summary": "List Regions",
-        "description": "List available IBM Cloud regions for watsonx.ai.",
         "operationId": "list_regions_api_v1_regions_get",
         "responses": {
           "200": {
@@ -76,48 +88,121 @@
         }
       }
     },
+    "/api/v1/translate/document": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "Translate any document (PDF, Word, Excel, PowerPoint, …)",
+        "description": "Upload a document in any supported format. The agent extracts text, translates it using the selected watsonx.ai model, and returns the translated file in the **same format** as the input (DOCX→DOCX, XLSX→XLSX, PPTX→PPTX, PDF→PDF).\n\nSet `source_lang='auto'` for automatic language detection.\n\n**Examples:** Japanese→English, English→Japanese, Portuguese→Spanish, French→German, …",
+        "operationId": "translate_document_api_v1_translate_document_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_translate_document_api_v1_translate_document_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/translate/pdf": {
       "post": {
         "tags": [
           "Translation"
         ],
-        "summary": "Translate a Japanese PDF to English",
-        "description": "Upload a Japanese PDF. The agent extracts text per page, translates each page using the selected watsonx.ai model, and returns a downloadable English PDF.",
+        "summary": "Translate a PDF document",
+        "description": "Upload a PDF. Extracts text (using docling with pypdf fallback), translates each page, and returns a downloadable translated PDF.\n\nNow supports any language pair — not just Japanese→English.",
         "operationId": "translate_pdf_api_v1_translate_pdf_post",
         "parameters": [
+          {
+            "name": "source_lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Source language",
+              "default": "Japanese",
+              "title": "Source Lang"
+            },
+            "description": "Source language"
+          },
+          {
+            "name": "target_lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Target language",
+              "default": "English",
+              "title": "Target Lang"
+            },
+            "description": "Target language"
+          },
           {
             "name": "model_id",
             "in": "query",
             "required": false,
             "schema": {
               "type": "string",
-              "description": "watsonx.ai model ID (see /api/v1/models for options)",
               "default": "ibm/granite-3-8b-instruct",
               "title": "Model Id"
-            },
-            "description": "watsonx.ai model ID (see /api/v1/models for options)"
+            }
           },
           {
             "name": "region",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "description": "watsonx.ai region URL (defaults to WATSONX_URL env var)",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "Region"
-            },
-            "description": "watsonx.ai region URL (defaults to WATSONX_URL env var)"
+            }
           },
           {
             "name": "project_id",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string",
-              "description": "watsonx project ID (defaults to WATSONX_PROJECT_ID env var)",
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "title": "Project Id"
-            },
-            "description": "watsonx project ID (defaults to WATSONX_PROJECT_ID env var)"
+            }
           }
         ],
         "requestBody": {
@@ -154,13 +239,97 @@
         }
       }
     },
+    "/api/v1/translate/document-base64": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "Translate any document — base64 JSON body (for AI orchestration)",
+        "description": "**Designed for AI orchestration platforms such as watsonx Orchestrate.**\n\nThe end user simply attaches a file in the chat. The orchestration platform automatically base64-encodes the attachment and calls this skill — the user never deals with base64 themselves.\n\nSupported formats: **PDF, DOCX, XLSX, PPTX, HTML, Markdown, TXT**\n\nDOCX → DOCX, XLSX → XLSX, PPTX → PPTX (format preserved). PDF/HTML/MD/TXT → PDF.\n\nSet `source_lang='auto'` for automatic language detection.\n\n**Example payload:**\n```json\n{\n  \"file\": \"<base64-encoded content>\",\n  \"filename\": \"report.docx\",\n  \"source_lang\": \"Portuguese\",\n  \"target_lang\": \"Japanese\"\n}\n```",
+        "operationId": "translate_document_base64_api_v1_translate_document_base64_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateDocumentBase64Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/translate/pdf-base64": {
+      "post": {
+        "tags": [
+          "Translation"
+        ],
+        "summary": "[Deprecated] Use /api/v1/translate/document-base64 instead",
+        "description": "Backward-compatible alias. Use `/api/v1/translate/document-base64` for new integrations.",
+        "operationId": "translate_pdf_base64_api_v1_translate_pdf_base64_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranslateDocumentBase64Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranslateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/translate/from-source": {
       "post": {
         "tags": [
           "Translation"
         ],
-        "summary": "Translate a Japanese PDF referenced by file path or bucket",
-        "description": "Provide a PDF source — either a server-side file path or an S3-compatible bucket object (IBM COS, AWS S3, MinIO, …). The agent fetches the PDF, translates it, and returns a downloadable English PDF.",
+        "summary": "Translate a document from a file path, URL, or bucket",
+        "description": "Fetch a document from a server path, HTTP URL, or S3-compatible bucket and translate it.",
         "operationId": "translate_from_source_api_v1_translate_from_source_post",
         "requestBody": {
           "content": {
@@ -201,8 +370,8 @@
         "tags": [
           "Translation"
         ],
-        "summary": "Translate Japanese text to English (direct)",
-        "description": "Send raw Japanese text and receive the English translation. Useful for testing or non-PDF workflows.",
+        "summary": "Translate raw text (any language pair)",
+        "description": "Send raw text and receive the translation. Supports any source/target language.",
         "operationId": "translate_text_endpoint_api_v1_translate_text_post",
         "requestBody": {
           "content": {
@@ -243,9 +412,8 @@
         "tags": [
           "Download"
         ],
-        "summary": "Download a translated PDF",
-        "description": "Download a previously translated PDF by filename.",
-        "operationId": "download_translated_pdf_api_v1_download__filename__get",
+        "summary": "Download a translated document",
+        "operationId": "download_translated_file_api_v1_download__filename__get",
         "parameters": [
           {
             "name": "filename",
@@ -259,12 +427,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Translated English PDF",
+            "description": "Translated document (PDF, DOCX, XLSX, PPTX, …)",
             "content": {
               "application/json": {
                 "schema": {}
-              },
-              "application/pdf": {}
+              }
             }
           },
           "404": {
@@ -286,13 +453,74 @@
   },
   "components": {
     "schemas": {
+      "Body_translate_document_api_v1_translate_document_post": {
+        "properties": {
+          "file": {
+            "anyOf": [
+              {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File",
+            "description": "Document to translate"
+          },
+          "source_lang": {
+            "type": "string",
+            "title": "Source Lang",
+            "description": "Source language (e.g. 'Japanese', 'Portuguese'). Use 'auto' to detect automatically.",
+            "default": "auto"
+          },
+          "target_lang": {
+            "type": "string",
+            "title": "Target Lang",
+            "description": "Target language (e.g. 'English', 'Spanish', 'French', 'Japanese')",
+            "default": "English"
+          },
+          "model_id": {
+            "type": "string",
+            "title": "Model Id",
+            "description": "watsonx.ai model ID",
+            "default": "ibm/granite-3-8b-instruct"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region",
+            "description": "watsonx.ai region URL"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "watsonx project ID"
+          }
+        },
+        "type": "object",
+        "title": "Body_translate_document_api_v1_translate_document_post"
+      },
       "Body_translate_pdf_api_v1_translate_pdf_post": {
         "properties": {
           "file": {
             "type": "string",
+            "contentMediaType": "application/octet-stream",
             "title": "File",
-            "description": "Japanese PDF file to translate",
-            "format": "binary"
+            "description": "PDF file to translate"
           }
         },
         "type": "object",
@@ -305,44 +533,60 @@
         "properties": {
           "type": {
             "type": "string",
-            "title": "Type",
-            "enum": [
-              "bucket"
-            ]
+            "const": "bucket",
+            "title": "Type"
           },
           "endpoint_url": {
-            "title": "Endpoint Url",
-            "description": "S3-compatible endpoint URL. Required for IBM COS (e.g. https://s3.us-south.cloud-object-storage.appdomain.cloud). Leave empty for AWS S3.",
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Url"
           },
           "bucket": {
             "type": "string",
-            "title": "Bucket",
-            "description": "Bucket name"
+            "title": "Bucket"
           },
           "key": {
             "type": "string",
-            "title": "Key",
-            "description": "Object key / path inside the bucket"
+            "title": "Key"
           },
           "access_key_id": {
-            "title": "Access Key Id",
-            "description": "AWS_ACCESS_KEY_ID / IBM HMAC access key. Falls back to env var.",
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Key Id"
           },
           "secret_access_key": {
-            "title": "Secret Access Key",
-            "description": "AWS_SECRET_ACCESS_KEY / IBM HMAC secret key. Falls back to env var.",
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Secret Access Key"
           },
           "region_name": {
-            "title": "Region Name",
-            "description": "Bucket region (e.g. 'us-south'). Optional for IBM COS.",
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Name"
           }
         },
         "type": "object",
@@ -351,22 +595,19 @@
           "bucket",
           "key"
         ],
-        "title": "BucketSource",
-        "description": "Read the PDF from an S3-compatible bucket (IBM COS, AWS S3, MinIO, …)."
+        "title": "BucketSource"
       },
       "FilePathSource": {
         "properties": {
           "type": {
             "type": "string",
-            "title": "Type",
-            "enum": [
-              "file_path"
-            ]
+            "const": "file_path",
+            "title": "Type"
           },
           "path": {
             "type": "string",
             "title": "Path",
-            "description": "Absolute or relative path to the PDF on the server filesystem"
+            "description": "Absolute or relative path to the document on the server filesystem"
           }
         },
         "type": "object",
@@ -374,8 +615,46 @@
           "type",
           "path"
         ],
-        "title": "FilePathSource",
-        "description": "Read the PDF from a path accessible to the server."
+        "title": "FilePathSource"
+      },
+      "FormatInfo": {
+        "properties": {
+          "extension": {
+            "type": "string",
+            "title": "Extension"
+          },
+          "mime_type": {
+            "type": "string",
+            "title": "Mime Type"
+          },
+          "requires": {
+            "type": "string",
+            "title": "Requires"
+          }
+        },
+        "type": "object",
+        "required": [
+          "extension",
+          "mime_type",
+          "requires"
+        ],
+        "title": "FormatInfo"
+      },
+      "FormatsResponse": {
+        "properties": {
+          "formats": {
+            "items": {
+              "$ref": "#/components/schemas/FormatInfo"
+            },
+            "type": "array",
+            "title": "Formats"
+          }
+        },
+        "type": "object",
+        "required": [
+          "formats"
+        ],
+        "title": "FormatsResponse"
       },
       "HTTPValidationError": {
         "properties": {
@@ -403,13 +682,38 @@
           "project_configured": {
             "type": "boolean",
             "title": "Project Configured"
+          },
+          "formats_available": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Formats Available"
+          },
+          "cjk_font_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cjk Font Path"
+          },
+          "pdf_engine": {
+            "type": "string",
+            "title": "Pdf Engine"
           }
         },
         "type": "object",
         "required": [
           "status",
           "watsonx_url",
-          "project_configured"
+          "project_configured",
+          "formats_available",
+          "cjk_font_path",
+          "pdf_engine"
         ],
         "title": "HealthResponse"
       },
@@ -452,6 +756,97 @@
         ],
         "title": "ModelsResponse"
       },
+      "TranslateDocumentBase64Request": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "byte",
+            "title": "File",
+            "description": "Base64-encoded content of the document to translate. Supported formats: PDF, DOCX, XLSX, PPTX, HTML, Markdown, TXT. AI orchestration platforms (e.g. watsonx Orchestrate) encode the user's file attachment automatically — the end user just attaches a normal file."
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename",
+            "description": "Original filename including extension (e.g. 'report.docx', 'invoice.pdf'). Used to detect the file format and name the output file. Always include the correct extension.",
+            "default": "document.pdf"
+          },
+          "source_lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Lang",
+            "description": "Language of the source document. Examples: 'Japanese', 'Portuguese', 'Spanish', 'French'. Use 'auto' to let the model detect the language automatically.",
+            "default": "auto"
+          },
+          "target_lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Lang",
+            "description": "Language to translate into. Examples: 'English', 'Japanese', 'Spanish', 'French'.",
+            "default": "English"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id",
+            "description": "watsonx.ai model ID. Defaults to ibm/granite-3-8b-instruct."
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region",
+            "description": "watsonx.ai region URL."
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "watsonx project ID."
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "TranslateDocumentBase64Request",
+        "description": "Request body for AI orchestration tools (e.g. watsonx Orchestrate).\nThe orchestration platform base64-encodes the user's file attachment automatically\nbefore calling this skill — the end user just uploads a normal file."
+      },
       "TranslateFromSourceRequest": {
         "properties": {
           "source": {
@@ -467,7 +862,6 @@
               }
             ],
             "title": "Source",
-            "description": "PDF source — a server file path, an HTTP/HTTPS URL, or a bucket object reference",
             "discriminator": {
               "propertyName": "type",
               "mapping": {
@@ -477,37 +871,85 @@
               }
             }
           },
+          "source_lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Lang",
+            "description": "Source language",
+            "default": "Japanese"
+          },
+          "target_lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Lang",
+            "description": "Target language",
+            "default": "English"
+          },
           "model_id": {
-            "title": "Model Id",
-            "description": "watsonx.ai model ID (see /api/v1/models). Defaults to granite-3-8b-instruct.",
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
           },
           "region": {
-            "title": "Region",
-            "description": "watsonx.ai region URL. Defaults to WATSONX_URL env var.",
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
           },
           "project_id": {
-            "title": "Project Id",
-            "description": "watsonx project ID. Defaults to WATSONX_PROJECT_ID env var.",
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
           }
         },
         "type": "object",
         "required": [
           "source"
         ],
-        "title": "TranslateFromSourceRequest",
-        "description": "Translate a PDF referenced by a local path, HTTP URL, or cloud bucket object."
+        "title": "TranslateFromSourceRequest"
       },
       "TranslateResponse": {
         "properties": {
           "message": {
             "type": "string",
             "title": "Message"
+          },
+          "source_lang": {
+            "type": "string",
+            "title": "Source Lang"
+          },
+          "target_lang": {
+            "type": "string",
+            "title": "Target Lang"
           },
           "pages_translated": {
             "type": "integer",
@@ -536,6 +978,8 @@
         "type": "object",
         "required": [
           "message",
+          "source_lang",
+          "target_lang",
           "pages_translated",
           "model_used",
           "region",
@@ -549,39 +993,90 @@
           "text": {
             "type": "string",
             "title": "Text",
-            "description": "Japanese text to translate"
+            "description": "Text to translate"
+          },
+          "source_lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Lang",
+            "description": "Source language (e.g. 'Japanese'). Use 'auto' to detect.",
+            "default": "auto"
+          },
+          "target_lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Lang",
+            "description": "Target language (e.g. 'English', 'Spanish')",
+            "default": "English"
           },
           "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Model Id",
-            "description": "watsonx model ID",
-            "type": "string",
-            "nullable": true
+            "description": "watsonx model ID"
           },
           "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Region",
-            "description": "watsonx region URL",
-            "type": "string",
-            "nullable": true
+            "description": "watsonx region URL"
           },
           "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Filename",
-            "description": "Original filename (without extension). Used to name the output PDF, e.g. 'japanese-doc'.",
-            "type": "string",
-            "nullable": true
+            "description": "Output filename stem"
           }
         },
         "type": "object",
         "required": [
           "text"
         ],
-        "title": "TranslateTextRequest",
-        "description": "Request body for direct text translation (non-PDF)."
+        "title": "TranslateTextRequest"
       },
       "TranslateTextResponse": {
         "properties": {
           "translated_text": {
             "type": "string",
             "title": "Translated Text"
+          },
+          "source_lang": {
+            "type": "string",
+            "title": "Source Lang"
+          },
+          "target_lang": {
+            "type": "string",
+            "title": "Target Lang"
           },
           "model_used": {
             "type": "string",
@@ -596,15 +1091,22 @@
             "title": "Translated Chars"
           },
           "download_url": {
-            "title": "Download Url",
-            "description": "URL to download the translated content as a PDF (when the input text is long enough to warrant a PDF)",
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
           }
         },
         "type": "object",
         "required": [
           "translated_text",
+          "source_lang",
+          "target_lang",
           "model_used",
           "source_chars",
           "translated_chars"
@@ -638,22 +1140,26 @@
         "properties": {
           "type": {
             "type": "string",
-            "title": "Type",
-            "enum": [
-              "url"
-            ]
+            "const": "url",
+            "title": "Type"
           },
           "url": {
             "type": "string",
             "title": "Url",
-            "description": "Publicly accessible or pre-signed URL pointing to the PDF"
+            "description": "Publicly accessible or pre-signed URL pointing to the document"
           },
           "headers": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Headers",
-            "description": "Optional HTTP headers (e.g. Authorization) needed to download the file",
-            "additionalProperties": true,
-            "type": "object",
-            "nullable": true
+            "description": "Optional HTTP headers (e.g. Authorization)"
           }
         },
         "type": "object",
@@ -661,8 +1167,7 @@
           "type",
           "url"
         ],
-        "title": "URLSource",
-        "description": "Download the PDF from any HTTP/HTTPS URL (e.g. a watsonx Assistant file attachment URL)."
+        "title": "URLSource"
       },
       "ValidationError": {
         "properties": {
@@ -708,7 +1213,7 @@
   },
   "servers": [
     {
-      "url": "https://watsonx-translator.2841tgdm3yaw.us-south.codeengine.appdomain.cloud"
+      "url": "https://watsonx-translator.2907fwm9n6us.us-south.codeengine.appdomain.cloud"
     }
   ]
 }
