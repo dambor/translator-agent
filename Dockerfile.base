@@ -24,37 +24,69 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --timeout=300 -r requirements.txt
 
+# Ensure cu2qu is available for CFF→TrueType conversion.
+# fonttools is already installed via requirements.txt, but cu2qu might be missing.
+RUN pip install --no-cache-dir 'fonttools[cu2qu]>=4.47.0' cu2qu
+
 # Extract CJK subfonts from the NotoSansCJK TTC and convert CFF→TrueType.
 # fpdf2's CFF subsetting corrupts complex CJK glyph outlines (leaving them
-# invisible), while its TrueType subsetting works correctly.  Converting to
-# actual TrueType outlines (cu2qu) fixes the invisible-glyph problem.
+# invisible / white), while its TrueType subsetting works correctly.
+# Converting to actual TrueType outlines (cu2qu) fixes the invisible-glyph problem.
+# This step MUST succeed — if it fails the build should fail too.
 RUN python3 - <<'EOF'
 import os, sys, subprocess
-try:
-    from fontTools.ttLib import TTCollection
-    src = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-    out_dir = "/usr/local/share/fonts/noto-cjk"
-    os.makedirs(out_dir, exist_ok=True)
-    if not os.path.exists(src):
-        print(f"WARNING: {src} not found", file=sys.stderr)
-        sys.exit(0)
-    coll = TTCollection(src)
-    for i, name in enumerate(["NotoSansCJKjp", "NotoSansCJKkr", "NotoSansCJKsc", "NotoSansCJKtc"]):
-        if i >= len(coll):
-            break
-        otf_path = f"{out_dir}/{name}-Regular.otf"
-        ttf_path = f"{out_dir}/{name}-Regular.ttf"
-        coll[i].save(otf_path)
-        # Convert CFF outlines → TrueType outlines so fpdf2 embeds correctly
-        result = subprocess.run(
-            ["python3", "-m", "fonttools", "otf2ttf", otf_path, "-o", ttf_path],
-            capture_output=True, text=True, timeout=300,
-        )
-        if result.returncode == 0 and os.path.exists(ttf_path):
-            os.unlink(otf_path)
-            print(f"Extracted+converted to TTF: {ttf_path}")
-        else:
-            print(f"WARNING: otf2ttf failed for {name}, keeping OTF: {result.stderr.strip()}", file=sys.stderr)
-except Exception as e:
-    print(f"Font extraction failed: {e}", file=sys.stderr)
+
+from fontTools.ttLib import TTCollection
+
+src = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+out_dir = "/usr/local/share/fonts/noto-cjk"
+os.makedirs(out_dir, exist_ok=True)
+
+if not os.path.exists(src):
+    print(f"ERROR: {src} not found — cannot build CJK fonts", file=sys.stderr)
+    sys.exit(1)
+
+coll = TTCollection(src)
+names = ["NotoSansCJKjp", "NotoSansCJKkr", "NotoSansCJKsc", "NotoSansCJKtc"]
+success = 0
+
+for i, name in enumerate(names):
+    if i >= len(coll):
+        print(f"WARNING: TTC only has {len(coll)} fonts, skipping {name}", file=sys.stderr)
+        continue
+
+    otf_path = f"{out_dir}/{name}-Regular.otf"
+    ttf_path = f"{out_dir}/{name}-Regular.ttf"
+
+    # Step 1: Extract individual OTF from TTC
+    coll[i].save(otf_path)
+    print(f"Extracted OTF: {otf_path} ({os.path.getsize(otf_path)} bytes)")
+
+    # Step 2: Convert CFF → TrueType outlines
+    result = subprocess.run(
+        ["python3", "-m", "fonttools", "otf2ttf", otf_path, "-o", ttf_path],
+        capture_output=True, text=True, timeout=600,
+    )
+
+    if result.returncode != 0 or not os.path.exists(ttf_path):
+        print(f"ERROR: otf2ttf FAILED for {name}!", file=sys.stderr)
+        print(f"  stdout: {result.stdout.strip()}", file=sys.stderr)
+        print(f"  stderr: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 3: Verify the output is actually TrueType (magic: 00 01 00 00)
+    with open(ttf_path, "rb") as f:
+        magic = f.read(4)
+    if magic != b'\x00\x01\x00\x00':
+        print(f"ERROR: {ttf_path} is NOT TrueType (magic={magic.hex()})", file=sys.stderr)
+        sys.exit(1)
+
+    os.unlink(otf_path)
+    print(f"OK: {ttf_path} ({os.path.getsize(ttf_path)} bytes, TrueType verified)")
+    success += 1
+
+print(f"\nFont conversion complete: {success}/{len(names)} fonts ready")
+if success == 0:
+    sys.exit(1)
 EOF
+

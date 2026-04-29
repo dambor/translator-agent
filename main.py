@@ -132,44 +132,40 @@ TESSERACT_LANG = {
 
 
 # ── CJK font path detection ──────────────────────────────────────────
-# fpdf2 embeds the font directly into the PDF — no registration needed.
+# reportlab handles OTF/TTF/TTC correctly, no conversion needed.
 
 _NOTO_DIR = "/usr/local/share/fonts/noto-cjk"
-# Prefer .ttf (TrueType outlines, converted from CFF at image build time).
-# fpdf2's TrueType subsetting works correctly; its CFF subsetting corrupts
-# complex CJK glyph charstrings, producing invisible glyphs.
-_CJK_LANG_FONTS = {
-    "japanese":            f"{_NOTO_DIR}/NotoSansCJKjp-Regular.ttf",
-    "korean":              f"{_NOTO_DIR}/NotoSansCJKkr-Regular.ttf",
-    "chinese":             f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
-    "chinese simplified":  f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
-    "chinese traditional": f"{_NOTO_DIR}/NotoSansCJKtc-Regular.ttf",
+_NOTO_SYS = "/usr/share/fonts/opentype/noto"
+_CJK_LANG_NAMES = {
+    "japanese":            "NotoSansCJKjp",
+    "korean":              "NotoSansCJKkr",
+    "chinese":             "NotoSansCJKsc",
+    "chinese simplified":  "NotoSansCJKsc",
+    "chinese traditional": "NotoSansCJKtc",
 }
-_CJK_FONT_FALLBACKS = [
-    f"{_NOTO_DIR}/NotoSansCJKsc-Regular.ttf",
-    f"{_NOTO_DIR}/NotoSansCJKjp-Regular.ttf",
-    f"{_NOTO_DIR}/NotoSansCJKsc-Regular.otf",
-    f"{_NOTO_DIR}/NotoSansCJKjp-Regular.otf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/System/Library/Fonts/PingFang.ttc",
-    "C:/Windows/Fonts/msyh.ttc",
-]
 _cjk_font_cache: dict[str, Optional[str]] = {}
 
 def _find_cjk_font(target_lang: str = "") -> Optional[str]:
+    """Find a CJK font file. reportlab handles OTF/TTF/TTC — any format works."""
     import glob
     key = target_lang.strip().lower()
     if key in _cjk_font_cache:
         return _cjk_font_cache[key]
-    preferred = _CJK_LANG_FONTS.get(key)
-    candidates = ([preferred] if preferred else []) + _CJK_FONT_FALLBACKS + \
-                 glob.glob(f"{_NOTO_DIR}/*.ttf")
-    for p in candidates:
+
+    name = _CJK_LANG_NAMES.get(key, "NotoSansCJKjp")
+    search = [
+        f"{_NOTO_DIR}/{name}-Regular.ttf",
+        f"{_NOTO_DIR}/{name}-Regular.otf",
+        f"{_NOTO_SYS}/NotoSansCJK-Regular.ttc",
+    ] + glob.glob(f"{_NOTO_DIR}/*.ttf") + glob.glob(f"{_NOTO_DIR}/*.otf")
+
+    for p in search:
         if p and os.path.exists(p):
             logger.info("CJK font for '%s': %s", target_lang, p)
             _cjk_font_cache[key] = p
             return p
-    logger.warning("No CJK font found for '%s'", target_lang)
+
+    logger.error("No CJK font found for '%s'", target_lang)
     _cjk_font_cache[key] = None
     return None
 
@@ -656,33 +652,103 @@ def translate_xlsx(file_bytes: bytes, fn: Callable[[str], str]) -> bytes:
     return out.getvalue()
 
 
-# ── PDF generation (ReportLab) ───────────────────────────────────────
+# ── PDF generation ───────────────────────────────────────────────────
 
-def build_translated_pdf(
+# Adobe CID font names for CJK — these are standard fonts supported by all
+# modern PDF readers. No font file needed — no subsetting, no conversion.
+_CJK_CID_FONTS = {
+    "japanese":            "HeiseiMin-W3",
+    "korean":              "HYSMyeongJo-Medium",
+    "chinese":             "STSong-Light",
+    "chinese simplified":  "STSong-Light",
+    "chinese traditional": "MSung-Light",
+}
+
+def _build_pdf_reportlab(
     pages: list[str],
     output_path: str,
-    source_lang: str = "auto",
-    target_lang: str = "English",
+    source_lang: str,
+    target_lang: str,
 ) -> None:
-    """Build a translated PDF using fpdf2 with proper Unicode/CJK font embedding."""
-    needs_cjk = target_lang.strip().lower() in CJK_LANGUAGES
-    cjk_path  = _find_cjk_font(target_lang) if needs_cjk else None
+    """Build a translated PDF using ReportLab with Adobe CID fonts for CJK.
+    CID fonts are standard PDF fonts — no font file needed, no subsetting issues."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.colors import HexColor
+    import xml.sax.saxutils as saxutils
 
+    # Pick the right CID font for the target language
+    cid_name = _CJK_CID_FONTS.get(target_lang.strip().lower(), "HeiseiMin-W3")
+    pdfmetrics.registerFont(UnicodeCIDFont(cid_name))
+
+    header_style = ParagraphStyle(
+        "TransHeader",
+        fontName=cid_name,
+        fontSize=9,
+        textColor=HexColor("#787878"),
+        spaceAfter=4,
+        leading=12,
+    )
+    body_style = ParagraphStyle(
+        "TransBody",
+        fontName=cid_name,
+        fontSize=11,
+        leading=16,
+        textColor=HexColor("#020202"),
+    )
+
+    doc = SimpleDocTemplate(
+        output_path,
+        pagesize=A4,
+        leftMargin=20 * mm, rightMargin=20 * mm,
+        topMargin=20 * mm, bottomMargin=20 * mm,
+    )
+
+    src = source_lang if source_lang.lower() != "auto" else "auto-detected"
+    story: list = []
+
+    for i, page_text in enumerate(pages):
+        if i > 0:
+            story.append(Spacer(1, 20))
+
+        header = f"Translated Document  |  {src} \u2192 {target_lang}  |  Page {i + 1} of {len(pages)}"
+        story.append(Paragraph(saxutils.escape(header), header_style))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#C8C8C8"),
+                                spaceAfter=6))
+
+        # Clean control chars, escape XML, convert newlines
+        clean = "".join(
+            c for c in page_text
+            if c in ("\n", "\t", " ") or not unicodedata.category(c).startswith("C")
+        )
+        html = saxutils.escape(clean).replace("\n", "<br/>")
+        story.append(Paragraph(html, body_style))
+
+    doc.build(story)
+    logger.info("PDF built (reportlab/CID %s): %s", cid_name, output_path)
+
+
+def _build_pdf_fpdf2(
+    pages: list[str],
+    output_path: str,
+    source_lang: str,
+    target_lang: str,
+) -> None:
+    """Build a translated PDF using fpdf2 — for non-CJK languages."""
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.set_margins(20, 20, 20)
 
     _DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    if cjk_path:
-        pdf.add_font("body", fname=cjk_path)
-        body_font = "body"
-    elif os.path.exists(_DEJAVU):
+    if os.path.exists(_DEJAVU):
         pdf.add_font("body", fname=_DEJAVU)
         body_font = "body"
     else:
         body_font = "Helvetica"
-        if needs_cjk:
-            logger.warning("CJK font unavailable — output may show boxes for %s", target_lang)
 
     _header_font = "body" if body_font == "body" else "Helvetica"
     src = source_lang if source_lang.lower() != "auto" else "auto-detected"
@@ -690,7 +756,6 @@ def build_translated_pdf(
     for i, page_text in enumerate(pages):
         pdf.add_page()
 
-        # Page header
         pdf.set_font(_header_font, size=9)
         pdf.set_text_color(120, 120, 120)
         pdf.cell(
@@ -703,16 +768,8 @@ def build_translated_pdf(
         pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
         pdf.ln(6)
 
-        # Body text
         pdf.set_font(body_font, size=11)
-        # Force fpdf2 to emit an explicit color command in the PDF stream.
-        # Pure black (0,0,0) can be treated as DeviceGray(0) which matches the
-        # default fill_color — causing fpdf2 to skip the command entirely.
-        # This leaves CJK text inheriting the stale header gray (120,120,120).
-        # Using (1,1,1) is visually indistinguishable from pure black but is
-        # numerically different from the default, so fpdf2 always emits it.
         pdf.set_text_color(1, 1, 1)
-        # Strip control characters but keep all Unicode (CJK, Arabic, etc.)
         clean = "".join(
             c for c in page_text
             if c in ("\n", "\t", " ") or not unicodedata.category(c).startswith("C")
@@ -720,8 +777,23 @@ def build_translated_pdf(
         pdf.multi_cell(0, 7, clean)
 
     pdf.output(output_path)
-    logger.info("PDF built: %s (font=%s)", output_path, body_font)
+    logger.info("PDF built (fpdf2): %s", output_path)
 
+
+def build_translated_pdf(
+    pages: list[str],
+    output_path: str,
+    source_lang: str = "auto",
+    target_lang: str = "English",
+) -> None:
+    """Build a translated PDF. Uses reportlab CID fonts for CJK, fpdf2 for everything else.
+    CID fonts are standard PDF fonts — no font file needed, no subsetting issues."""
+    needs_cjk = target_lang.strip().lower() in CJK_LANGUAGES
+
+    if needs_cjk:
+        _build_pdf_reportlab(pages, output_path, source_lang, target_lang)
+    else:
+        _build_pdf_fpdf2(pages, output_path, source_lang, target_lang)
 
 # ── COS / local file management ──────────────────────────────────────
 
@@ -859,8 +931,8 @@ async def health_check():
         watsonx_url=DEFAULT_WATSONX_URL,
         project_configured=bool(WATSONX_PROJECT_ID),
         formats_available=sorted(SUPPORTED_EXTENSIONS),
-        cjk_font_path=_find_cjk_font("japanese"),
-        pdf_engine="fpdf2",
+        cjk_font_path="CID:HeiseiMin-W3 (reportlab)",
+        pdf_engine="reportlab (CJK) + fpdf2 (other)",
     )
 
 

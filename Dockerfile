@@ -1,5 +1,10 @@
 FROM private.us.icr.io/ce--8ff6f-2907fwm9n6us/watsonx-translator-base:latest
 
+# Install reportlab for CJK PDF generation.
+# Uses Adobe CID fonts (HeiseiMin-W3, STSong-Light, etc.) — standard PDF fonts
+# that don't need any font file. Completely avoids the fpdf2 CFF subsetting bug.
+RUN pip install --no-cache-dir 'reportlab>=4.0.0'
+
 COPY main.py .
 COPY .env* ./
 
